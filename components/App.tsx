@@ -1,53 +1,51 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { isFirebaseConfigured, db, auth } from '../services/firebase'; // Import the configuration check, db, and auth
+import { isFirebaseConfigured, db, auth, firebaseConfig } from '../services/firebase';
 import { authService } from '../services/authService';
 import { apiService } from '../services/apiService';
 import { User, View, Influencer, PlatformSettings, ProfileData, ConversationParticipant, LiveTvChannel, Transaction, PayoutRequest, AnyCollaboration, PlatformBanner, RefundRequest, DailyPayoutRequest } from '../types';
-// Fix: Corrected Firebase imports for 'Timestamp', 'doc', and 'getDoc' to align with Firebase v9 modular syntax.
-import { Timestamp, doc, getDoc } from 'firebase/firestore';
+// Fix: Add QueryDocumentSnapshot and DocumentData for pagination types.
+import { Timestamp, doc, getDoc, QueryDocumentSnapshot, DocumentData, query, collection, where, limit, getDocs } from 'firebase/firestore';
 
-import LoginPage from './components/LoginPage';
-import Sidebar from './components/Sidebar';
-import Header from './components/Header';
-import InfluencerCard from './components/InfluencerCard';
-import ChatWindow from './components/ChatWindow';
+import LoginPage from './LoginPage';
+import Sidebar from './Sidebar';
+import Header from './Header';
+import InfluencerCard from './InfluencerCard';
+import ChatWindow from './ChatWindow';
 import { findInfluencersWithAI } from '../services/geminiService';
-import { SparklesIcon, LogoIcon } from './components/Icons';
-import Dashboard from './components/Dashboard';
-import ProfilePage from './components/ProfilePage';
-import SettingsPanel from './components/SettingsPanel';
-// Fix: Module '"file:///components/AdminPanel"' has no default export. Changed to named import.
-import { AdminPanel } from './components/AdminPanel';
-import PostLoginWelcomePage from './components/PostLoginWelcomePage';
-import SendMessageModal from './components/SendMessageModal';
-import CollabRequestModal from './components/CollabRequestModal';
-import CollaborationRequestsPage from './components/CollaborationRequestsPage';
-import ProfileDetailDrawer from './components/ProfileDetailDrawer';
-import CampaignsPage from './components/CampaignsPage';
-import DiscoverCampaignsPage from './components/DiscoverCampaignsPage';
-import LiveTvPageForBrand from './components/LiveTvPageForBrand';
-import AdRequestsPage from './components/AdRequestsPage';
-import BannerAdsPageForBrand from './components/BannerAdsPageForBrand';
-import AdBookingsPage from './components/AdBookingsPage';
-import UserSupportPage from './components/UserSupportPage';
-import SupportAdminPage from './components/SupportAdminPage';
-import MembershipPage from './components/MembershipPage';
-import MyCollaborationsPage from './components/MyCollaborationsPage';
-// Fix: Changed import to named import to resolve module resolution error.
-import { MyApplicationsPage } from './components/MyApplicationsPage';
-import MyAdBookingsPage from './components/MyAdBookingsPage';
-import DailyPayoutRequestModal from './components/DailyPayoutRequestModal';
-import CommunityPage from './components/CommunityPage';
-import SocialMediaFab from './components/SocialMediaFab';
-import PaymentHistoryPage from './components/PaymentHistoryPage';
-import KycPage from './components/KycPage';
-import PayoutRequestPage from './components/PayoutRequestPage';
-import RefundRequestPage from './components/RefundRequestPage';
-import BoostPage from './components/BoostPage';
-import LiveHelpChat from './components/LiveHelpChat';
+import { SparklesIcon, LogoIcon } from './Icons';
+import Dashboard from './Dashboard';
+import ProfilePage from './ProfilePage';
+import SettingsPanel from './SettingsPanel';
+import { AdminPanel } from './AdminPanel';
+import PostLoginWelcomePage from './PostLoginWelcomePage';
+import SendMessageModal from './SendMessageModal';
+import CollabRequestModal from './CollabRequestModal';
+import CollaborationRequestsPage from './CollaborationRequestsPage';
+import ProfileDetailDrawer from './ProfileDetailDrawer';
+import CampaignsPage from './CampaignsPage';
+import DiscoverCampaignsPage from './DiscoverCampaignsPage';
+import LiveTvPageForBrand from './LiveTvPageForBrand';
+import AdRequestsPage from './AdRequestsPage';
+import BannerAdsPageForBrand from './BannerAdsPageForBrand';
+import AdBookingsPage from './AdBookingsPage';
+import UserSupportPage from './UserSupportPage';
+import SupportAdminPage from './SupportAdminPage';
+import MembershipPage from './MembershipPage';
+import MyCollaborationsPage from './MyCollaborationsPage';
+import { MyApplicationsPage } from './MyApplicationsPage';
+import MyAdBookingsPage from './MyAdBookingsPage';
+import DailyPayoutRequestModal from './DailyPayoutRequestModal';
+import CommunityPage from './CommunityPage';
+import SocialMediaFab from './SocialMediaFab';
+import PaymentHistoryPage from './PaymentHistoryPage';
+import KycPage from './KycPage';
+import PayoutRequestPage from './PayoutRequestPage';
+import RefundRequestPage from './RefundRequestPage';
+import BoostPage from './BoostPage';
+import LiveHelpChat from './LiveHelpChat';
+import { NotificationManager } from './NotificationManager';
+import ClickableImageBanner from './ClickableImageBanner';
 
-
-// A new component to display a clear error if Firebase is not configured.
 const FirebaseConfigError: React.FC = () => (
     <div className="min-h-screen bg-red-50 flex items-center justify-center p-4">
         <div className="w-full max-w-2xl bg-white p-8 rounded-2xl shadow-xl border-2 border-red-200">
@@ -65,6 +63,120 @@ const FirebaseConfigError: React.FC = () => (
     </div>
 );
 
+const DatabaseConfigError: React.FC<{ message: string }> = ({ message }) => {
+    const projectId = firebaseConfig?.projectId || "your-project-id";
+    const lowerMessage = message.toLowerCase();
+    const isApiNotEnabled = lowerMessage.includes("cloud firestore api") || lowerMessage.includes("datastore.googleapis.com");
+    const isPermissionDenied = lowerMessage.includes("permission-denied") || lowerMessage.includes("insufficient permissions") || lowerMessage.includes("missing or insufficient permissions");
+    const isOfflineOrProjectNotFound = lowerMessage.includes("offline") || lowerMessage.includes("project not found");
+
+    const getErrorDetails = () => {
+        if (isPermissionDenied) {
+            return {
+                title: "Permission Denied",
+                description: "Your Firestore Security Rules are blocking access.",
+                fixTitle: "How to Fix: Update Security Rules",
+                fixSteps: (
+                    <>
+                        <p>To allow this app to work, you need to allow read/write access in your Firestore Security Rules.</p>
+                        <ol className="list-decimal list-inside space-y-3 mt-3">
+                            <li>Go to the <a href={`https://console.firebase.google.com/project/${projectId}/firestore/rules`} target="_blank" rel="noreferrer" className="text-indigo-600 underline font-bold">Firestore Rules Tab</a> for project <strong>{projectId}</strong>.</li>
+                            <li><strong>Delete</strong> the existing rules and <strong>paste</strong> the following:</li>
+                        </ol>
+                        <pre className="bg-gray-800 text-green-400 p-4 rounded-lg text-sm overflow-x-auto font-mono border border-gray-700 shadow-inner my-3">
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}`}
+                        </pre>
+                        <p className="text-sm bg-yellow-50 p-3 rounded border border-yellow-200 text-yellow-800">
+                            <strong>Note:</strong> These rules allow <strong>public access</strong>. This is fine for development but should be restricted for production.
+                        </p>
+                        <p className="mt-2">Click <strong>Publish</strong>, wait 30 seconds, and then reload this page.</p>
+                    </>
+                )
+            };
+        }
+        
+        if (isApiNotEnabled || isOfflineOrProjectNotFound) {
+             return {
+                title: "Database Not Found",
+                description: isOfflineOrProjectNotFound ? `The project ID "${projectId}" might be incorrect or the database doesn't exist.` : `The Firestore database has not been created or enabled for project "${projectId}".`,
+                fixTitle: "How to Fix: Create Firestore Database",
+                fixSteps: (
+                    <ol className="list-decimal list-inside space-y-4 text-gray-700">
+                        <li className="pl-2">
+                            <strong>Open Firebase Console:</strong> Go to <a href={`https://console.firebase.google.com/project/${projectId}/firestore`} target="_blank" rel="noreferrer" className="text-indigo-600 underline font-medium">Firestore Database for {projectId}</a>.
+                        </li>
+                        <li className="pl-2">
+                            <strong>Create Database:</strong> Click the <strong>Create Database</strong> button.
+                        </li>
+                        <li className="pl-2">
+                            <strong>Select Test Mode:</strong> When prompted, select <strong>Start in Test Mode</strong>. This sets the correct permissions for development.
+                        </li>
+                        <li className="pl-2">
+                            <strong>Location:</strong> Choose a location and click <strong>Enable</strong>. Wait a minute for it to provision.
+                        </li>
+                    </ol>
+                )
+            };
+        }
+
+        return {
+            title: "Database Connection Issue",
+            description: "An unexpected error occurred while trying to connect to Firestore.",
+            fixTitle: "Troubleshooting Steps",
+            fixSteps: (
+                 <ol className="list-decimal list-inside space-y-2">
+                    <li>Verify the <strong>projectId</strong> in <code>services/firebase.ts</code> matches your Firebase project.</li>
+                    <li>Ensure you have an active internet connection.</li>
+                    <li>Check the <a href="https://status.firebase.google.com/" target="_blank" rel="noreferrer" className="text-indigo-600 underline">Firebase Status Dashboard</a> for outages.</li>
+                </ol>
+            )
+        };
+    };
+
+    const { title, description, fixTitle, fixSteps } = getErrorDetails();
+
+    return (
+        <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6">
+            <div className="max-w-3xl w-full bg-white rounded-2xl shadow-xl p-8 border-t-4 border-indigo-600">
+                <div className="flex items-center gap-4 mb-6">
+                    <div className="p-3 bg-red-100 text-red-600 rounded-full">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                    </div>
+                    <div>
+                        <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+                        <p className="text-gray-500">{description}</p>
+                    </div>
+                </div>
+
+                <div className="bg-gray-100 p-4 rounded-lg font-mono text-sm text-red-800 mb-6 break-all border border-gray-300">
+                    <strong>Error:</strong> {message}
+                </div>
+                
+                 <div className="space-y-4 text-gray-700">
+                    <h3 className="text-lg font-bold text-gray-900 border-b pb-2 mb-2">{fixTitle}</h3>
+                    {fixSteps}
+                </div>
+
+                <div className="mt-8 flex justify-center">
+                    <button 
+                        onClick={() => window.location.reload()} 
+                        className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition-colors shadow-lg transform hover:-translate-y-0.5 active:translate-y-0"
+                    >
+                        I've Fixed It - Reload App
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 const MaintenancePage: React.FC = () => (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900 flex items-center justify-center p-4">
         <div className="w-full max-w-lg bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-xl text-center">
@@ -76,7 +188,6 @@ const MaintenancePage: React.FC = () => (
         </div>
     </div>
 );
-
 
 const NotificationBanner: React.FC<{ text: string }> = ({ text }) => (
     <div className="bg-indigo-600 text-white text-sm font-medium text-center p-2">
@@ -109,9 +220,11 @@ const MembershipInactiveBanner: React.FC<{ onUpgrade: () => void }> = ({ onUpgra
     </div>
 );
 
+// Fix: Add pagination limit constant
+const INFLUENCER_PAGE_LIMIT = 12;
 
-const App: React.FC = () => {
-  // First, check if Firebase config has been set. If not, show an error page.
+// Fix: Changed App to a named export to resolve module loading errors.
+export const App: React.FC = () => {
   if (!isFirebaseConfigured) {
     return <FirebaseConfigError />;
   }
@@ -120,6 +233,7 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [activeView, setActiveView] = useState<View>(View.DASHBOARD);
   const [platformSettings, setPlatformSettings] = useState<PlatformSettings | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -132,23 +246,29 @@ const App: React.FC = () => {
   
   const [influencers, setInfluencers] = useState<Influencer[]>([]);
   const [liveTvChannels, setLiveTvChannels] = useState<LiveTvChannel[]>([]);
-  const [allUsers, setAllUsers] = useState<User[]>([]); // For conversation lookups
+  const [allUsers, setAllUsers] = useState<User[]>([]);
   const [filteredInfluencers, setFilteredInfluencers] = useState<Influencer[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAiSearching, setIsAiSearching] = useState(false);
   const [platformBanners, setPlatformBanners] = useState<PlatformBanner[]>([]);
   
-  // Admin-specific data
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [allPayouts, setAllPayouts] = useState<PayoutRequest[]>([]);
+  const [allCollabs, setAllCollabs] = useState<AnyCollaboration[]>([]);
+  const [allRefunds, setAllRefunds] = useState<RefundRequest[]>([]);
+  const [allDailyPayouts, setAllDailyPayouts] = useState<DailyPayoutRequest[]>([]);
 
-  const [activeChat, setActiveChat] = useState<Influencer | null>(null); // Re-using influencer type for chat partner
+  // Fix: Add state variables for pagination
+  const [lastInfluencerDoc, setLastInfluencerDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [hasMoreInfluencers, setHasMoreInfluencers] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+  const [activeChat, setActiveChat] = useState<Influencer | null>(null);
   const [collabRequestInfluencer, setCollabRequestInfluencer] = useState<Influencer | null>(null);
   const [viewingProfile, setViewingProfile] = useState<ProfileData | null>(null);
   const [payoutRequestCollab, setPayoutRequestCollab] = useState<AnyCollaboration | null>(null);
   const [refundingCollab, setRefundingCollab] = useState<AnyCollaboration | null>(null);
   const [liveHelpSessionInfo, setLiveHelpSessionInfo] = useState<{ sessionId: string; staff: User | null } | null>(null);
-
 
   useEffect(() => {
     const root = window.document.documentElement;
@@ -161,15 +281,23 @@ const App: React.FC = () => {
   }, [theme]);
 
   const refreshPlatformSettings = useCallback(() => {
-    apiService.getPlatformSettings().then(setPlatformSettings).catch(err => {
-      console.error("Failed to reload platform settings:", err);
+    apiService.getPlatformSettings()
+      .then((settings) => {
+        setPlatformSettings(settings);
+        setConfigError(null);
+      })
+      .catch(err => {
+        console.error("Failed to reload platform settings:", err);
+        if (err.message && (err.message.includes("Cloud Firestore API") || err.code === "permission-denied" || err.message.includes("permission-denied"))) {
+             setConfigError("Permission denied: The Firestore database has not been initialized in the Firebase Console for project 'collabzz-757f1', or access is denied.");
+        } else {
+             setConfigError(err.message || "An unexpected error occurred while connecting to the database.");
+        }
     });
   }, []);
 
   useEffect(() => {
-    // Fetch settings on initial app load.
     refreshPlatformSettings();
-    
     apiService.getActivePlatformBanners().then(setPlatformBanners).catch(err => {
         console.error("Failed to fetch platform banners:", err);
     });
@@ -183,10 +311,9 @@ const App: React.FC = () => {
             const userDoc = await getDoc(userDocRef);
             if (userDoc.exists()) {
                 const profileData = userDoc.data();
-                // Reconstruct the user object exactly as onAuthChange does to ensure consistency
                 const refreshedUser: User = {
                     id: firebaseUser.uid,
-                    email: firebaseUser.email || profileData.email, // Use profile email as fallback
+                    email: firebaseUser.email || profileData.email,
                     ...profileData
                 } as User;
                 setUser(refreshedUser);
@@ -197,35 +324,74 @@ const App: React.FC = () => {
     }
 }, []);
 
-
   const refreshAllData = useCallback(async () => {
       if (user && platformSettings) {
-        // Seed the database with initial data if it's the first time
         await apiService.initializeFirestoreData();
         
-        if (user.role === 'brand' || user.role === 'influencer' || user.role === 'staff' || user.role === 'livetv' || user.role === 'banneragency') {
-          const influencerData = await apiService.getInfluencers(platformSettings);
-          setInfluencers(influencerData);
-          setFilteredInfluencers(influencerData);
+        // Data for discovery pages (for all roles that can see them)
+        if (user.role === 'brand' || user.role === 'influencer' || user.role === 'livetv' || user.role === 'banneragency') {
+          const influencerResult = await apiService.getInfluencersPaginated(platformSettings, { limit: INFLUENCER_PAGE_LIMIT });
+          setInfluencers(influencerResult.influencers);
+          setFilteredInfluencers(influencerResult.influencers);
+          setLastInfluencerDoc(influencerResult.lastVisible);
+          setHasMoreInfluencers(influencerResult.influencers.length === INFLUENCER_PAGE_LIMIT);
           
           const channelData = await apiService.getLiveTvChannels(platformSettings);
           setLiveTvChannels(channelData);
-
-          const allUserData = await apiService.getAllUsers();
-          setAllUsers(allUserData);
         }
 
+        // Data for Admin Panel (only for staff)
         if (user.role === 'staff') {
-            const [transactions, payouts] = await Promise.all([
+            const [
+                allUserData, transactions, payouts, direct, campaign, adslot, banner, refunds, dailyPayouts
+            ] = await Promise.all([
+                apiService.getAllUsers(),
                 apiService.getAllTransactions(),
                 apiService.getAllPayouts(),
+                apiService.getAllCollaborationRequests(),
+                apiService.getAllCampaignApplications(),
+                apiService.getAllAdSlotRequests(),
+                apiService.getAllBannerAdBookingRequests(),
+                apiService.getAllRefundRequests(),
+                apiService.getAllDailyPayoutRequests(),
             ]);
+            setAllUsers(allUserData);
             setAllTransactions(transactions);
             setAllPayouts(payouts);
+            setAllCollabs([...direct, ...campaign, ...adslot, ...banner]);
+            setAllRefunds(refunds);
+            setAllDailyPayouts(dailyPayouts);
+        } else {
+            // For non-staff, we still need allUsers for things like disputes, so fetch it separately.
+            const allUserData = await apiService.getAllUsers();
+            setAllUsers(allUserData);
         }
       }
     }, [user, platformSettings]);
 
+  // Fix: Add function to load more influencers for pagination.
+  const loadMoreInfluencers = useCallback(async () => {
+    if (!platformSettings || !hasMoreInfluencers || isLoadingMore) return;
+
+    setIsLoadingMore(true);
+    try {
+        const result = await apiService.getInfluencersPaginated(platformSettings, {
+            limit: INFLUENCER_PAGE_LIMIT,
+            startAfterDoc: lastInfluencerDoc!,
+        });
+
+        setInfluencers(prev => [...prev, ...result.influencers]);
+        if (!searchQuery) {
+            setFilteredInfluencers(prev => [...prev, ...result.influencers]);
+        }
+        setLastInfluencerDoc(result.lastVisible);
+        setHasMoreInfluencers(result.influencers.length === INFLUENCER_PAGE_LIMIT);
+    } catch (error) {
+        console.error("Failed to load more influencers:", error);
+    } finally {
+        setIsLoadingMore(false);
+    }
+  }, [platformSettings, hasMoreInfluencers, isLoadingMore, lastInfluencerDoc, searchQuery]);
 
   useEffect(() => {
     const unsubscribe = authService.onAuthChange((firebaseUser) => {
@@ -238,14 +404,12 @@ const App: React.FC = () => {
                 sessionStorage.setItem('hasSeenWelcome', 'true');
             }
         }
-         // Set default view based on role
         switch (firebaseUser.role) {
             case 'staff': setActiveView(View.ADMIN); break;
             case 'brand': setActiveView(View.INFLUENCERS); break;
             default: setActiveView(View.DASHBOARD); break;
         }
       } else {
-        // User logged out, clear session state
         sessionStorage.removeItem('hasSeenWelcome');
         setActiveView(View.DASHBOARD);
         setActiveChat(null);
@@ -284,7 +448,6 @@ const App: React.FC = () => {
         setFilteredInfluencers(matches);
       } catch (error) {
         console.error("AI Search failed:", error);
-        // Maybe show an error to the user
       } finally {
         setIsAiSearching(false);
       }
@@ -297,7 +460,6 @@ const App: React.FC = () => {
   };
   
   const handleConversationSelected = (participant: ConversationParticipant) => {
-    // Create a temporary object that looks like an Influencer for the ChatWindow
     const tempChatPartner: Influencer = {
       id: participant.id,
       name: participant.name,
@@ -312,16 +474,11 @@ const App: React.FC = () => {
   };
 
   const handleSendMessageFromDrawer = (profile: ProfileData) => {
-      setViewingProfile(null); // Close the drawer
-      
-      // Find the full influencer object if it exists
+      setViewingProfile(null);
       const chatPartner = influencers.find(i => i.id === profile.id);
-      
       if (chatPartner) {
           setActiveChat(chatPartner);
       } else {
-          // If the profile is not in the influencer list (e.g., a brand),
-          // create a temporary object that looks enough like an influencer for the chat window.
           const tempChatPartner: Influencer = {
               id: profile.id,
               name: profile.name,
@@ -348,15 +505,12 @@ const App: React.FC = () => {
   
   const handleStartLiveHelp = async () => {
     let staffUserId = platformSettings?.liveHelpStaffId;
-    
     if (!staffUserId) {
-        // Try to find a staff user with appropriate permissions
         const staffUser = allUsers.find(u => u.role === 'staff' && !u.isBlocked);
         if (staffUser) {
             staffUserId = staffUser.id;
         }
     }
-
     if (!staffUserId) {
         alert("Live help is currently unavailable. No support agents found.");
         return;
@@ -370,6 +524,9 @@ const App: React.FC = () => {
     setLiveHelpSessionInfo({ sessionId, staff: staffUser });
   };
 
+  if (configError) {
+      return <DatabaseConfigError message={configError} />;
+  }
 
   if (isLoading || !platformSettings) {
     return (
@@ -380,11 +537,9 @@ const App: React.FC = () => {
   }
 
   if (!user) {
-    // Show login page if no user is authenticated. This allows staff to access the login form during maintenance mode.
     return <LoginPage platformSettings={platformSettings} />;
   }
 
-  // After authentication, check if the app is in maintenance mode and if the user is not staff.
   if (platformSettings.isMaintenanceModeEnabled && user.role !== 'staff') {
     return <MaintenancePage />;
   }
@@ -409,7 +564,6 @@ const App: React.FC = () => {
           return <KycPage user={user} onKycSubmitted={refreshUser} isResubmit={true} platformSettings={platformSettings} />;
       case View.PAYOUT_REQUEST:
           if (!payoutRequestCollab) {
-              // Safety net: if we land here without a collab selected, go back to dashboard
               setActiveView(View.DASHBOARD);
               return <Dashboard user={user} setActiveView={setActiveView} platformSettings={platformSettings} banners={platformBanners} />;
           }
@@ -480,6 +634,14 @@ const App: React.FC = () => {
                 />
               ))}
             </div>
+            {/* Fix: Add 'load more' button for pagination */}
+            {hasMoreInfluencers && (
+                <div className="mt-8 text-center">
+                    <button onClick={loadMoreInfluencers} disabled={isLoadingMore} className="px-6 py-3 text-sm font-semibold text-white bg-indigo-600 rounded-lg shadow-md hover:bg-indigo-700 disabled:opacity-50">
+                        {isLoadingMore ? 'Loading...' : 'Load More Influencers'}
+                    </button>
+                </div>
+            )}
           </div>
         );
       case View.DISCOVER_LIVETV:
@@ -487,10 +649,20 @@ const App: React.FC = () => {
       case View.DISCOVER_BANNERADS:
         return <BannerAdsPageForBrand user={user} onStartChat={handleConversationSelected} platformSettings={platformSettings} />;
       case View.ADMIN:
-        return <AdminPanel user={user} allUsers={allUsers} allTransactions={allTransactions} allPayouts={allPayouts} platformSettings={platformSettings} onUpdate={refreshAllData} />;
+        return <AdminPanel 
+                    user={user} 
+                    allUsers={allUsers} 
+                    allTransactions={allTransactions} 
+                    allPayouts={allPayouts} 
+                    allCollabs={allCollabs}
+                    allRefunds={allRefunds}
+                    allDailyPayouts={allDailyPayouts}
+                    platformSettings={platformSettings} 
+                    onUpdate={refreshAllData} 
+                />;
       case View.SETTINGS:
         if (user.role === 'staff') return <div className="bg-white dark:bg-gray-800 shadow-lg rounded-2xl overflow-hidden"><SettingsPanel onSettingsUpdate={refreshPlatformSettings} /></div>;
-        return null; // or a not-found/access-denied page
+        return null;
       case View.PROFILE:
         return <ProfilePage user={user} onProfileUpdate={handleProfileUpdate} onGoToMembership={() => setActiveView(View.MEMBERSHIP)} platformSettings={platformSettings} />;
       case View.DASHBOARD:
@@ -534,7 +706,6 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen overflow-hidden flex bg-gray-50 dark:bg-gray-950">
-      {/* Desktop Sidebar */}
       <Sidebar 
         user={user}
         activeView={activeView}
@@ -542,7 +713,6 @@ const App: React.FC = () => {
         userRole={user.role}
         platformSettings={platformSettings}
       />
-      {/* Mobile Sidebar */}
       <Sidebar 
         isMobile
         user={user}
@@ -554,6 +724,7 @@ const App: React.FC = () => {
         platformSettings={platformSettings}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
+        <NotificationManager user={user} />
         {user.kycStatus === 'rejected' && (
             <KycRejectedBanner onResubmit={() => setActiveView(View.KYC)} reason={user.kycDetails?.rejectionReason} />
         )}
@@ -567,12 +738,18 @@ const App: React.FC = () => {
             setActiveView={setActiveView}
             platformSettings={platformSettings}
             onConversationSelected={handleConversationSelected}
-            allUsers={allUsers}
-            allInfluencers={influencers}
             onMobileNavToggle={() => setIsMobileNavOpen(true)}
             theme={theme}
             setTheme={setTheme}
         />
+
+        {platformBanners.length > 0 && (
+            <ClickableImageBanner 
+                imageUrl={platformBanners[0].imageUrl}
+                targetUrl={platformBanners[0].targetUrl}
+                title={platformBanners[0].title}
+            />
+        )}
         
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
           {renderContent()}
@@ -594,7 +771,6 @@ const App: React.FC = () => {
             onClose={() => setLiveHelpSessionInfo(null)}
         />
       )}
-
 
       {collabRequestInfluencer && (
         <CollabRequestModal
@@ -618,5 +794,3 @@ const App: React.FC = () => {
     </div>
   );
 };
-
-export default App;

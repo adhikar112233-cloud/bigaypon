@@ -1,12 +1,40 @@
 import React, { useState } from 'react';
 import { authService } from '../services/authService';
-import { AdminIcon } from './Icons';
+import { AdminIcon, ExclamationTriangleIcon } from './Icons';
 import { PlatformSettings } from '../types';
+import { firebaseConfig } from '../services/firebase';
 
 interface StaffLoginModalProps {
     onClose: () => void;
     platformSettings: PlatformSettings;
 }
+
+const CopyableInput: React.FC<{ value: string }> = ({ value }) => {
+    const [copied, setCopied] = useState(false);
+    const copyToClipboard = () => {
+        navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+    return (
+        <div className="mt-2 flex items-center gap-2">
+            <input 
+                type="text" 
+                readOnly 
+                value={value} 
+                className="w-full p-2 bg-white text-gray-900 border border-gray-300 rounded-md font-mono text-sm dark:bg-gray-800 dark:text-gray-100 dark:border-gray-500"
+            />
+            <button 
+                type="button" 
+                onClick={copyToClipboard}
+                className="px-3 py-2 text-sm bg-gray-200 rounded-md hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500"
+            >
+                {copied ? 'Copied!' : 'Copy'}
+            </button>
+        </div>
+    );
+};
+
 
 const StaffLoginModal: React.FC<StaffLoginModalProps> = ({ onClose, platformSettings }) => {
     const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -34,16 +62,20 @@ const StaffLoginModal: React.FC<StaffLoginModalProps> = ({ onClose, platformSett
             } else {
                 await authService.register(email, password, 'staff', name, '', '');
             }
-            // On successful login/signup, the onAuthStateChanged listener in App.tsx
-            // will automatically handle the UI transition, so we can just close the modal.
             onClose();
         } catch (err: any) {
-            if (mode === 'login' && (err.message.includes('not-found') || err.message.includes('wrong-password'))) {
+            if (err.code === 'auth/unauthorized-domain') {
+                setError('auth/unauthorized-domain');
+            } else if (err.code === 'auth/auth-domain-config-required') {
+                setError('auth/auth-domain-config-required');
+            } else if (err.code === 'auth/internal-error') {
+                setError('auth/internal-error');
+            } else if (mode === 'login' && err.code === 'auth/invalid-credential') {
                 setError('Invalid staff credentials. Please try again.');
-            } else if (mode === 'signup' && err.message.includes('email-already-in-use')) {
+            } else if (mode === 'signup' && err.code === 'auth/email-already-in-use') {
                 setError('This email is already registered.');
-            }
-             else {
+            } else {
+                console.error("Staff auth error:", err);
                 setError('An unexpected error occurred. Please try again later.');
             }
         } finally {
@@ -54,12 +86,66 @@ const StaffLoginModal: React.FC<StaffLoginModalProps> = ({ onClose, platformSett
     const toggleMode = () => {
         setMode(prev => (prev === 'login' ? 'signup' : 'login'));
         setError(null);
-        // Reset fields when toggling
         setName('');
         setEmail('');
         setPassword('');
         setConfirmPassword('');
     }
+
+    const renderError = () => {
+        if (!error) return null;
+    
+        let title = "Authentication Error";
+        let content: React.ReactNode = <p>{error}</p>;
+    
+        if (error === 'auth/unauthorized-domain') {
+            title = "Action Required: Authorize Domain";
+            content = (
+                <>
+                    <p>Firebase authentication (Google, OTP, Password Reset) requires this app's domain to be on an allowlist for security. This is a one-time setup for this preview URL.</p>
+                    <ol className="list-decimal list-inside space-y-2 mt-3 text-sm">
+                        <li>
+                            <strong>Go to Auth Settings:</strong>
+                            <a 
+                                href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings/domains`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="ml-2 font-medium text-indigo-600 dark:text-indigo-400 underline hover:text-indigo-800 dark:hover:text-indigo-300"
+                            >
+                                Click to open "Authorized domains"
+                            </a>
+                        </li>
+                        <li>
+                            <strong>Add Domain:</strong> On the Firebase page, click <strong>"Add domain"</strong>.
+                        </li>
+                        <li>
+                            <strong>Copy & Paste:</strong> Copy the domain below and paste it into the Firebase dialog.
+                        </li>
+                    </ol>
+                    <CopyableInput value={window.location.hostname} />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">After adding the domain, you can try again. If it fails, a full page refresh might be needed.</p>
+                </>
+            );
+        } else if (error === 'auth/internal-error') {
+            title = "Internal Auth Error";
+            content = (
+                <p>Please check your Firebase project configuration. Ensure the 'Email/Password' sign-in provider is enabled.</p>
+            );
+        } else if (error === 'auth/auth-domain-config-required') {
+            title = "Auth Domain Missing";
+            content = <p>The Firebase 'authDomain' is missing from your configuration. Please check <code>services/firebase.ts</code>.</p>;
+        }
+    
+        return (
+             <div className="mt-4 text-left bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border-l-4 border-red-500 dark:border-red-600">
+                <h3 className="font-bold text-red-800 dark:text-red-200 mb-2 flex items-center gap-2">
+                    <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0" />
+                    {title}
+                </h3>
+                <div className="text-red-700 dark:text-red-300 text-sm space-y-2 pl-7">{content}</div>
+            </div>
+        );
+    };
 
 
     return (
@@ -131,7 +217,7 @@ const StaffLoginModal: React.FC<StaffLoginModalProps> = ({ onClose, platformSett
                         </div>
                     )}
 
-                    {error && <p className="text-red-500 text-xs text-center">{error}</p>}
+                    {renderError()}
 
                     <button 
                         type="submit" 
@@ -142,11 +228,9 @@ const StaffLoginModal: React.FC<StaffLoginModalProps> = ({ onClose, platformSett
                     </button>
                 </form>
                  <div className="text-center text-sm mt-4">
-                    {(platformSettings.isStaffRegistrationEnabled || mode === 'signup') && (
-                        <button onClick={toggleMode} className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
-                            {mode === 'login' ? 'Create a staff account' : 'Already have an account? Login'}
-                        </button>
-                    )}
+                    <button onClick={toggleMode} className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
+                        {mode === 'login' ? 'Create a staff account' : 'Already have an account? Login'}
+                    </button>
                 </div>
             </div>
         </div>

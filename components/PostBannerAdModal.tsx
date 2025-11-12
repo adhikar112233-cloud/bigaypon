@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { User } from '../types';
 import { apiService } from '../services/apiService';
 
@@ -12,15 +12,15 @@ const indianCities = [
     'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Ahmedabad', 'Chennai', 'Kolkata', 'Surat', 'Pune', 'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Thane', 'Bhopal', 'Visakhapatnam', 'Pimpri-Chinchwad', 'Patna', 'Vadodara', 'Ghaziabad', 'Ludhiana', 'Agra', 'Nashik', 'Faridabad', 'Meerut', 'Rajkot', 'Varanasi', 'Srinagar', 'Aurangabad', 'Dhanbad', 'Amritsar', 'Navi Mumbai', 'Allahabad', 'Ranchi', 'Howrah', 'Coimbatore', 'Jabalpur', 'Gwalior', 'Vijayawada', 'Jodhpur', 'Madurai', 'Raipur', 'Kota', 'Guwahati', 'Chandigarh'
 ];
 
-const bannerTypesWithImages = [
-    { type: 'Billboards', imageUrl: 'https://placehold.co/600x400/3f51b5/ffffff?text=Billboard' },
-    { type: 'Posters', imageUrl: 'https://placehold.co/600x400/e91e63/ffffff?text=Poster' },
-    { type: 'Transit Advertising', imageUrl: 'https://placehold.co/600x400/4caf50/ffffff?text=Transit+Ad' },
-    { type: 'Street Furniture Advertising', imageUrl: 'https://placehold.co/600x400/ff9800/ffffff?text=Street+Furniture' },
-    { type: 'Wallscapes and Murals', imageUrl: 'https://placehold.co/600x400/9c27b0/ffffff?text=Wallscape' },
-    { type: 'Digital Out Of Home (DOOH)', imageUrl: 'https://placehold.co/600x400/f44336/ffffff?text=DOOH' },
-    { type: 'Mobile Billboards', imageUrl: 'https://placehold.co/600x400/00bcd4/ffffff?text=Mobile+Billboard' },
-    { type: 'Event and Stadium Advertising', imageUrl: 'https://placehold.co/600x400/795548/ffffff?text=Stadium+Ad' },
+const bannerTypes = [
+    'Billboards',
+    'Posters',
+    'Transit Advertising',
+    'Street Furniture Advertising',
+    'Wallscapes and Murals',
+    'Digital Out Of Home (DOOH)',
+    'Mobile Billboards',
+    'Event and Stadium Advertising',
 ];
 
 
@@ -29,31 +29,37 @@ const PostBannerAdModal: React.FC<PostBannerAdModalProps> = ({ user, onClose, on
     const [address, setAddress] = useState('');
     const [size, setSize] = useState('');
     const [feePerDay, setFeePerDay] = useState(0);
-    const [bannerType, setBannerType] = useState(bannerTypesWithImages[0].type);
+    const [bannerType, setBannerType] = useState(bannerTypes[0]);
+    const [photoFile, setPhotoFile] = useState<File | null>(null);
+    const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const photoPreview = useMemo(() => {
-        return bannerTypesWithImages.find(bt => bt.type === bannerType)?.imageUrl;
-    }, [bannerType]);
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+            const file = e.target.files[0];
+            setPhotoFile(file);
+            if (photoPreview) {
+                URL.revokeObjectURL(photoPreview);
+            }
+            setPhotoPreview(URL.createObjectURL(file));
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!address || !size || feePerDay <= 0) {
-            setError("Please fill all fields.");
-            return;
-        }
-
-        const photoUrl = bannerTypesWithImages.find(bt => bt.type === bannerType)?.imageUrl;
-        if (!photoUrl) {
-            setError("A valid banner type must be selected.");
+        if (!address || !size || feePerDay <= 0 || !photoFile) {
+            setError("Please fill all fields and upload a photo.");
             return;
         }
 
         setIsLoading(true);
         setError(null);
         try {
+            const photoUrl = await apiService.uploadBannerAdPhoto(user.id, photoFile);
+
             await apiService.createBannerAd({
                 agencyId: user.id,
                 agencyName: user.companyName || user.name,
@@ -93,7 +99,7 @@ const PostBannerAdModal: React.FC<PostBannerAdModalProps> = ({ user, onClose, on
                         <div>
                             <label htmlFor="bannerType" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Banner Type</label>
                             <select id="bannerType" value={bannerType} onChange={e => setBannerType(e.target.value)} required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
-                                {bannerTypesWithImages.map(item => <option key={item.type} value={item.type}>{item.type}</option>)}
+                                {bannerTypes.map(item => <option key={item} value={item}>{item}</option>)}
                             </select>
                         </div>
                     </div>
@@ -112,7 +118,7 @@ const PostBannerAdModal: React.FC<PostBannerAdModalProps> = ({ user, onClose, on
                         </div>
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Banner Photo Preview</label>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Banner Photo</label>
                         <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md dark:border-gray-600">
                             <div className="space-y-1 text-center">
                                 {photoPreview ? (
@@ -120,7 +126,14 @@ const PostBannerAdModal: React.FC<PostBannerAdModalProps> = ({ user, onClose, on
                                 ) : (
                                     <svg className="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" /></svg>
                                 )}
-                                <p className="text-xs text-gray-500 dark:text-gray-400">Image is automatically selected based on Banner Type.</p>
+                                <div className="flex text-sm text-gray-600 dark:text-gray-400 justify-center">
+                                    <label htmlFor="file-upload" className="relative cursor-pointer bg-white dark:bg-gray-800 rounded-md font-medium text-indigo-600 hover:text-indigo-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-indigo-500">
+                                        <span>Upload a file</span>
+                                        <input id="file-upload" name="file-upload" type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="sr-only" required />
+                                    </label>
+                                    <p className="pl-1">or drag and drop</p>
+                                </div>
+                                <p className="text-xs text-gray-500 dark:text-gray-500">PNG or JPG up to 10MB</p>
                             </div>
                         </div>
                     </div>

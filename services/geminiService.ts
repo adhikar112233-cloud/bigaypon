@@ -1,5 +1,5 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { Influencer, UserRole } from '../types';
+import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { Influencer, UserRole, User } from '../types';
 
 // Assume process.env.API_KEY is available in the environment
 if (!process.env.API_KEY) {
@@ -56,6 +56,22 @@ export const findInfluencersWithAI = async (query: string, influencers: Influenc
 
   try {
     const ai = getAi();
+    
+    // Create a sanitized, plain object array for JSON stringification.
+    // This prevents circular reference errors if the influencers array contains complex objects (e.g., from Firestore).
+    const plainInfluencers = influencers.map(i => ({
+      id: i.id,
+      name: i.name,
+      handle: i.handle,
+      bio: i.bio,
+      followers: i.followers,
+      niche: i.niche,
+      engagementRate: i.engagementRate,
+      socialMediaLinks: i.socialMediaLinks,
+      location: i.location,
+      isBoosted: i.isBoosted
+    }));
+
     const prompt = `
       You are an advanced filtering algorithm for a talent discovery platform.
       The user wants to find influencers from a list based on their query.
@@ -65,7 +81,7 @@ export const findInfluencersWithAI = async (query: string, influencers: Influenc
       User Query: "${query}"
 
       Influencer List (JSON):
-      ${JSON.stringify(influencers, null, 2)}
+      ${JSON.stringify(plainInfluencers, null, 2)}
 
       Respond with a JSON object that strictly adheres to this schema: { "matchingIds": ["string"] }.
       The "matchingIds" array should contain the string IDs of the matching influencers.
@@ -150,7 +166,7 @@ export const filterPayoutsWithAI = async (query: string, items: any[]): Promise<
       You are an advanced filtering algorithm for a financial dashboard.
       Analyze the user's query and the provided JSON list of payout/refund requests.
       Your task is to return only the IDs of the items that match the criteria in the query.
-      The query might be about amounts (e.g., "over 5000", "less than 100"), statuses (e.g., "pending", "rejected refunds"), user names, collaboration titles, or types (e.g., "all refunds", "daily payouts").
+      The query might be about amounts (e.g., "over 5000", "less than 100"), statuses (e.g., "pending", "rejected refunds"), user names, user PI numbers (Profile ID), collaboration titles, collaboration document IDs, or the user-facing Collab ID (e.g. CRI1234567890), or types (e.g., "all refunds", "daily payouts").
 
       User Query: "${query}"
 
@@ -161,7 +177,10 @@ export const filterPayoutsWithAI = async (query: string, items: any[]): Promise<
           status: item.status,
           amount: item.amount,
           userName: item.userName,
+          userPiNumber: item.userPiNumber,
           collabTitle: item.collabTitle,
+          collaborationId: item.collaborationId,
+          collabId: item.collabId,
           date: item.timestamp?.toDate ? item.timestamp.toDate().toISOString().split('T')[0] : null
       })), null, 2)}
 
@@ -204,31 +223,110 @@ export const filterPayoutsWithAI = async (query: string, items: any[]): Promise<
   }
 };
 
-export const filterDisputesWithAI = async (query: string, disputes: any[]): Promise<string[]> => {
+export const filterTransactionsWithAI = async (query: string, items: any[]): Promise<string[]> => {
+  if (!query.trim()) {
+    return items.map(i => i.transactionId);
+  }
+
+  try {
+    const ai = getAi();
+    const prompt = `
+      You are an advanced filtering algorithm for a financial dashboard.
+      Analyze the user's query and the provided JSON list of transactions.
+      Your task is to return only the "transactionId" of the items that match the criteria in the query.
+      The query might be about amounts, statuses, user names, user roles, user PI numbers (Profile ID), descriptions, collaboration document IDs, user-facing Collab IDs (e.g. CRI1234567890), or types (e.g., "all payments", "payouts").
+
+      User Query: "${query}"
+
+      Transaction List (JSON):
+      ${JSON.stringify(items.map(item => ({
+          transactionId: item.transactionId,
+          type: item.type,
+          status: item.status,
+          amount: item.amount,
+          userName: item.userName,
+          userRole: item.userRole,
+          userPiNumber: item.userPiNumber,
+          description: item.description,
+          collaborationId: item.collaborationId,
+          collabId: item.collabId,
+          date: item.date ? item.date.toISOString().split('T')[0] : null
+      })), null, 2)}
+
+      Respond with a JSON object that strictly adheres to this schema: { "matchingIds": ["string"] }.
+      The "matchingIds" array should contain the string "transactionId" of the matching items.
+      If no items match the query, the "matchingIds" array should be empty.
+    `;
+    
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            matchingIds: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.STRING,
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const jsonText = response.text;
+    const result = JSON.parse(jsonText);
+
+    if (result && Array.isArray(result.matchingIds)) {
+      return result.matchingIds;
+    }
+
+    return [];
+  } catch (error) {
+    console.error("Error filtering transactions with AI:", error);
+    // On error, return all IDs to not break UI
+    return items.map(i => i.transactionId);
+  }
+};
+
+
+export const filterDisputesWithAI = async (query: string, disputes: any[], allUsers: User[]): Promise<string[]> => {
   if (!query.trim()) {
     return disputes.map(d => d.id);
   }
 
   try {
     const ai = getAi();
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
     const prompt = `
       You are an advanced filtering assistant for a disputes resolution panel.
       Analyze the user's search query and the provided JSON list of disputes.
       Return only the IDs of the disputes that match the criteria in the query.
-      The query might ask about specific names, reasoning keywords (e.g., "incomplete work", "fraud", "unresponsive"), statuses (e.g., "open", "resolved"), or dates.
+      The query might ask about specific names, user PI numbers (Profile ID), reasoning keywords (e.g., "incomplete work", "fraud", "unresponsive"), statuses (e.g., "open", "resolved"), collaboration document IDs, user-facing Collab IDs (e.g. CRI1234567890), or dates.
 
       User Query: "${query}"
 
       Dispute List (JSON):
-      ${JSON.stringify(disputes.map(d => ({
-          id: d.id,
-          reporter: d.disputedByName,
-          against: d.disputedAgainstName,
-          reason: d.reason,
-          collab: d.collaborationTitle,
-          status: d.status,
-          date: d.timestamp?.toDate ? d.timestamp.toDate().toISOString().split('T')[0] : null
-      })), null, 2)}
+      ${JSON.stringify(disputes.map(d => {
+        const reporter = userMap.get(d.disputedById);
+        const against = userMap.get(d.disputedAgainstId);
+        return {
+            id: d.id,
+            reporter: d.disputedByName,
+            reporterPiNumber: reporter?.piNumber,
+            against: d.disputedAgainstName,
+            againstPiNumber: against?.piNumber,
+            reason: d.reason,
+            collab: d.collaborationTitle,
+            collaborationId: d.collaborationId,
+            collabId: d.collabId,
+            status: d.status,
+            date: d.timestamp?.toDate ? d.timestamp.toDate().toISOString().split('T')[0] : null
+        }
+      }), null, 2)}
 
       Respond with a JSON object adhering to this schema: { "matchingIds": ["string"] }.
       The "matchingIds" array must contain the string IDs of the matched disputes.
@@ -264,5 +362,138 @@ export const filterDisputesWithAI = async (query: string, disputes: any[]): Prom
   } catch (error) {
     console.error("Error filtering disputes with AI:", error);
     return disputes.map(d => d.id);
+  }
+};
+
+export const filterPostsWithAI = async (query: string, posts: any[]): Promise<string[]> => {
+  if (!query.trim()) {
+    return posts.map(p => p.id);
+  }
+
+  try {
+    const ai = getAi();
+    const prompt = `
+      You are an advanced filtering assistant for a community feed.
+      Analyze the user's search query and the provided JSON list of posts.
+      Return only the IDs of the posts that match the criteria in the query.
+      The query might be about specific user names, user roles, keywords in the post text, visibility (public/private), or dates.
+
+      User Query: "${query}"
+
+      Post List (JSON):
+      ${JSON.stringify(posts.map(p => ({
+          id: p.id,
+          userName: p.userName,
+          userRole: p.userRole,
+          text: p.text,
+          visibility: p.visibility || 'public',
+          isBlocked: p.isBlocked,
+          date: p.timestamp?.toDate ? p.timestamp.toDate().toISOString().split('T')[0] : null
+      })), null, 2)}
+
+      Respond with a JSON object adhering to this schema: { "matchingIds": ["string"] }.
+      The "matchingIds" array must contain the string IDs of the matched posts.
+      If no posts match, return an empty array.
+    `;
+    
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            matchingIds: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.STRING,
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const jsonText = response.text;
+    const result = JSON.parse(jsonText);
+
+    if (result && Array.isArray(result.matchingIds)) {
+      return result.matchingIds;
+    }
+    return [];
+  } catch (error) {
+    console.error("Error filtering posts with AI:", error);
+    return posts.map(p => p.id);
+  }
+};
+
+export const enhanceImagePrompt = async (originalPrompt: string): Promise<string> => {
+  try {
+    const ai = getAi();
+    const prompt = `An AI image generator failed to create an image from the following prompt, likely because it was too simple, ambiguous, or lacked detail: "${originalPrompt}"
+
+Rewrite and enhance this prompt to be highly descriptive and visually rich, making it much more likely to generate a successful and interesting image. Add details about the subject, setting, lighting, style, and composition. Return only the new, improved prompt, without any explanation or preamble.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    
+    return response.text.trim();
+  } catch (error) {
+    console.error("Error enhancing image prompt:", error);
+    return originalPrompt;
+  }
+};
+
+type ImageGenerationResult = 
+  | { success: true; data: string }
+  | { success: false; reason: 'SAFETY' | 'RECITATION' | 'NO_IMAGE' | 'UNKNOWN', message: string };
+
+export const generateImageFromPrompt = async (prompt: string): Promise<ImageGenerationResult> => {
+  try {
+    const ai = getAi();
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [{ text: prompt }],
+      },
+      config: {
+        responseModalities: [Modality.IMAGE],
+      },
+    });
+    
+    if (response.promptFeedback?.blockReason) {
+        return { success: false, reason: 'SAFETY', message: `Image generation failed: The prompt was blocked for safety reasons (${response.promptFeedback.blockReason}). Please modify your prompt.` };
+    }
+
+    const candidate = response.candidates?.[0];
+    if (candidate) {
+      if (candidate.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (part.inlineData?.data) {
+            return { success: true, data: part.inlineData.data };
+          }
+        }
+      }
+      
+      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+        const reason = candidate.finishReason;
+        if (reason === 'SAFETY' || reason === 'RECITATION') {
+            return { success: false, reason: 'SAFETY', message: `Image generation failed due to safety policies. Please modify your prompt to avoid sensitive or copyrighted content.` };
+        }
+        if (reason === 'NO_IMAGE') {
+            return { success: false, reason: 'NO_IMAGE', message: `The AI could not generate an image from your prompt.` };
+        }
+        return { success: false, reason: 'UNKNOWN', message: `Image generation failed with an unexpected error. Reason: ${reason}.` };
+      }
+    }
+
+    return { success: false, reason: 'UNKNOWN', message: "No image data found in AI response. The prompt may have been blocked or the model failed to generate an image." };
+
+  } catch (error) {
+    console.error("Error generating image with AI:", error);
+    return { success: false, reason: 'UNKNOWN', message: "Failed to generate image. The AI service may be temporarily unavailable or the prompt was deemed unsafe." };
   }
 };

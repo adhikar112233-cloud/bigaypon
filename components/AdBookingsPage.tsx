@@ -13,6 +13,7 @@ interface AdBookingsPageProps {
 
 const RequestStatusBadge: React.FC<{ status: AdBookingStatus }> = ({ status }) => {
     const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize";
+    // FIX: Add missing 'refund_pending_admin_review' status to satisfy the type.
     const statusMap: Record<AdBookingStatus, { text: string; classes: string }> = {
         pending_approval: { text: "Pending Approval", classes: "text-yellow-800 bg-yellow-100" },
         rejected: { text: "Rejected", classes: "text-red-800 bg-red-100" },
@@ -24,6 +25,7 @@ const RequestStatusBadge: React.FC<{ status: AdBookingStatus }> = ({ status }) =
         completed: { text: "Completed", classes: "text-gray-800 bg-gray-100" },
         disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100" },
         brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100" },
+        refund_pending_admin_review: { text: "Refund Under Review", classes: "text-blue-800 bg-blue-100" },
     };
     const { text, classes } = statusMap[status] || { text: status.replace(/_/g, ' '), classes: "text-gray-800 bg-gray-100" };
     return <span className={`${baseClasses} ${classes}`}>{text}</span>;
@@ -121,7 +123,7 @@ const AdBookingsPage: React.FC<AdBookingsPageProps> = ({ user, platformSettings,
 
     const handleUpdate = async (reqId: string, data: Partial<BannerAdBookingRequest>) => {
         setRequests(prev => prev.map(req => req.id === reqId ? { ...req, ...data } : req));
-        await apiService.updateBannerAdBookingRequest(reqId, data);
+        await apiService.updateBannerAdBookingRequest(reqId, data, user.id);
         setModal(null);
         setSelectedRequest(null);
     };

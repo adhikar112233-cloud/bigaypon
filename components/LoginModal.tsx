@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useRef } from 'react';
 import { LogoIcon, GoogleIcon } from './Icons';
 import { UserRole, PlatformSettings } from '../types';
@@ -46,7 +48,7 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
                 {status === 'sent' ? (
                      <div className="text-center py-4">
                         <h3 className="text-lg font-bold text-teal-500">Reset Link Sent</h3>
-                        <p className="text-gray-600 mt-2">Please check your email inbox at <span className="font-semibold">{email}</span> for instructions on how to reset your password.</p>
+                        <p className="text-gray-600 mt-2">Please check your email inbox [spm/all mail option] at <span className="font-semibold">{email}</span> for instructions.</p>
                         <button onClick={onClose} className="mt-6 w-full py-2 px-4 text-sm font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700">
                             Close
                         </button>
@@ -109,12 +111,13 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
   useEffect(() => {
     // This sets up the invisible reCAPTCHA verifier.
     if (!(window as any).recaptchaVerifier) {
-        (window as any).recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', {
+// Fix: Corrected RecaptchaVerifier constructor to match Firebase v9 modular syntax.
+        (window as any).recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
           'size': 'invisible',
           'callback': () => {
             // reCAPTCHA solved, allow signInWithPhoneNumber.
           }
-        }, auth);
+        });
     }
   }, []);
   
@@ -488,7 +491,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
             </div>
         </div>
         {showForgotPassword && <ForgotPasswordModal onClose={() => setShowForgotPassword(false)} platformSettings={platformSettings} />}
-        {showStaffLogin && <StaffLoginModal onClose={() => setShowStaffLogin(false)} />}
+        {showStaffLogin && <StaffLoginModal onClose={() => setShowStaffLogin(false)} platformSettings={platformSettings} />}
     </>
   );
 };

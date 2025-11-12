@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { LogoIcon } from './Icons';
+
+
+import React, { useState, useEffect } from 'react';
+import { LogoIcon, GoogleIcon, ExclamationTriangleIcon } from './Icons';
 import { UserRole, PlatformSettings } from '../types';
 import { authService } from '../services/authService';
 import StaffLoginModal from './StaffLoginModal';
 import { RecaptchaVerifier, ConfirmationResult } from 'firebase/auth';
-import { auth } from '../services/firebase';
+import { auth, firebaseConfig } from '../services/firebase';
 
 
 interface LoginPageProps {
@@ -14,6 +16,33 @@ interface LoginPageProps {
 type AuthMode = 'login' | 'signup';
 type LoginMethod = 'password' | 'otp';
 
+const CopyableInput: React.FC<{ value: string }> = ({ value }) => {
+    const [copied, setCopied] = useState(false);
+    const copyToClipboard = () => {
+        navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+    return (
+        <div className="mt-2 flex items-center gap-2">
+            <input 
+                type="text" 
+                readOnly 
+                value={value} 
+                className="w-full p-2 bg-white text-gray-900 border border-gray-300 rounded-md font-mono text-sm dark:bg-gray-800 dark:text-gray-100 dark:border-gray-500"
+            />
+            <button 
+                type="button" 
+                onClick={copyToClipboard}
+                className="px-3 py-2 text-sm bg-gray-200 rounded-md hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500"
+            >
+                {copied ? 'Copied!' : 'Copy'}
+            </button>
+        </div>
+    );
+};
+
+
 const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: PlatformSettings }> = ({ onClose, platformSettings }) => {
     const [resetMethod, setResetMethod] = useState<'email' | 'otp'>('email');
     
@@ -22,7 +51,6 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
     
     // OTP state
     const [otpStep, setOtpStep] = useState<'enter_number' | 'enter_otp' | 'set_password'>('enter_number');
-    const [countryCode, setCountryCode] = useState('+91');
     const [phoneNumber, setPhoneNumber] = useState('');
     const [otp, setOtp] = useState('');
     const [newPassword, setNewPassword] = useState('');
@@ -32,11 +60,6 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
     // General state
     const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'verifying' | 'verified' | 'error'>('idle');
     const [error, setError] = useState('');
-
-    const countryCodes = [
-        { name: 'IN', code: '+91' }, { name: 'US', code: '+1' }, { name: 'GB', code: '+44' },
-        { name: 'AU', code: '+61' }, { name: 'DE', code: '+49' },
-    ];
 
     const resetState = () => {
         setStatus('idle');
@@ -57,7 +80,13 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
             await authService.sendPasswordResetEmail(email);
             setStatus('sent');
         } catch (err: any) {
-            setError('Failed to send reset email. Please check the address and try again.');
+            if (err.code === 'auth/unauthorized-domain') {
+                setError('auth/unauthorized-domain');
+            } else if (err.code === 'auth/auth-domain-config-required') {
+                setError('auth/auth-domain-config-required');
+            } else {
+                setError('Failed to send reset email. Please check the address and try again.');
+            }
             setStatus('error');
             console.error(err);
         }
@@ -65,24 +94,46 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
 
     const handleSendOtp = async () => {
         setError('');
-        const fullPhoneNumber = countryCode + phoneNumber;
-        if (!phoneNumber.trim() || !/^\d{7,15}$/.test(phoneNumber)) {
-            setError("Please enter a valid mobile number.");
+        let fullPhoneNumber = phoneNumber.trim();
+
+        if (/^\d{10}$/.test(fullPhoneNumber)) {
+            fullPhoneNumber = `+91${fullPhoneNumber}`;
+        }
+        else if (!/^\+\d{11,14}$/.test(fullPhoneNumber)) {
+            setError("Please enter a valid 10-digit mobile number, or a full number with country code.");
             return;
         }
+
         setStatus('sending');
         try {
-            const appVerifier = (window as any).recaptchaVerifier;
+            const recaptchaContainer = document.getElementById('recaptcha-container-forgot');
+            if (!recaptchaContainer) {
+                throw new Error("reCAPTCHA container element not found in the DOM.");
+            }
+            recaptchaContainer.innerHTML = '';
+
+            const appVerifier = new RecaptchaVerifier(auth, recaptchaContainer, {
+                'size': 'invisible',
+                'callback': () => {}
+            });
+
+            await appVerifier.render();
+            
             const confirmation = await authService.sendLoginOtp(fullPhoneNumber, appVerifier);
             setConfirmationResult(confirmation);
             setOtpStep('enter_otp');
             setStatus('sent');
-        } catch (err) {
-            setError("Failed to send OTP. Please check the number or try again.");
-            setStatus('error');
-             (window as any).recaptchaVerifier.render().then((widgetId: any) => {
-                (window as any).grecaptcha.reset(widgetId);
-             });
+        } catch (err: any) {
+            console.error("OTP Error", err);
+            if (err.code === 'auth/unauthorized-domain') {
+                setError('auth/unauthorized-domain');
+            } else if (err.code === 'auth/auth-domain-config-required') {
+                setError('auth/auth-domain-config-required');
+            } else if (err.code === 'auth/internal-error') {
+                setError('auth/internal-error');
+            } else {
+                setError("Failed to send OTP. Please check the number or try again.");
+            }
         }
     };
 
@@ -98,8 +149,14 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
             await authService.verifyLoginOtp(confirmationResult, otp);
             setOtpStep('set_password');
             setStatus('verified');
-        } catch (err) {
-            setError("Invalid OTP. Please try again.");
+        } catch (err: any) {
+            if (err.code === 'auth/unauthorized-domain') {
+                setError('auth/unauthorized-domain');
+            } else if (err.code === 'auth/auth-domain-config-required') {
+                setError('auth/auth-domain-config-required');
+            } else {
+                setError("Invalid OTP. Please try again.");
+            }
             setStatus('error');
         }
     };
@@ -120,13 +177,82 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
             await authService.updateUserPassword(newPassword);
             setStatus('sent'); // Reuse 'sent' status for success message
         } catch (err: any) {
-            setError(err.message || "Failed to reset password.");
+             if (err.code === 'auth/unauthorized-domain') {
+                setError('auth/unauthorized-domain');
+            } else if (err.code === 'auth/auth-domain-config-required') {
+                setError('auth/auth-domain-config-required');
+            } else {
+                setError(err.message || "Failed to reset password.");
+            }
             setStatus('error');
         }
     };
     
+    const renderError = () => {
+        if (status !== 'error' || !error) return null;
+        
+        let title = "An Error Occurred";
+        let content: React.ReactNode = <p>{error}</p>;
+    
+        if (error === 'auth/unauthorized-domain') {
+            title = "Action Required: Authorize Domain";
+            content = (
+                <>
+                    <p>Firebase authentication (Google, OTP, Password Reset) requires this app's domain to be on an allowlist for security. This is a one-time setup for this preview URL.</p>
+                    <ol className="list-decimal list-inside space-y-2 mt-3 text-sm">
+                        <li>
+                            <strong>Go to Auth Settings:</strong>
+                            <a 
+                                href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings/domains`} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="ml-2 font-medium text-indigo-600 dark:text-indigo-400 underline hover:text-indigo-800 dark:hover:text-indigo-300"
+                            >
+                                Click to open "Authorized domains"
+                            </a>
+                        </li>
+                        <li>
+                            <strong>Add Domain:</strong> On the Firebase page, click <strong>"Add domain"</strong>.
+                        </li>
+                        <li>
+                            <strong>Copy & Paste:</strong> Copy the domain below and paste it into the Firebase dialog.
+                        </li>
+                    </ol>
+                    <CopyableInput value={window.location.hostname} />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">After adding the domain, you can try again. If it fails, a full page refresh might be needed.</p>
+                </>
+            );
+        } else if (error === 'auth/internal-error') {
+            title = "Internal Auth Error";
+            content = (
+                <p>This often indicates a Firebase project configuration issue. Please verify the following in your Firebase Console:
+                    <ul className="list-disc list-inside mt-2 space-y-1 text-xs">
+                        <li><strong>Sign-in Providers:</strong> In Authentication &rarr; Sign-in method, ensure the relevant providers (Email, Phone) are enabled.</li>
+                        <li><strong>Support Email:</strong> In Project Settings (⚙️ icon), make sure a 'Support email' is selected.</li>
+                    </ul>
+                </p>
+            );
+        } else if (error === 'auth/auth-domain-config-required') {
+            title = "Auth Domain Missing";
+            content = (
+                <p>The Firebase 'authDomain' is missing from your configuration. Please check <code>services/firebase.ts</code>.</p>
+            );
+        }
+    
+        return (
+            <div className="mt-4 text-left bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border-l-4 border-red-500 dark:border-red-600">
+                <h3 className="font-bold text-red-800 dark:text-red-200 mb-2 flex items-center gap-2">
+                    <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0" />
+                    {title}
+                </h3>
+                <div className="text-red-700 dark:text-red-300 text-sm space-y-2 pl-7">{content}</div>
+            </div>
+        );
+    };
+    
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+            <div id="recaptcha-container-forgot"></div>
             <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 w-full max-w-md relative">
                 <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 dark:text-gray-300 dark:hover:text-gray-100">
                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -134,9 +260,9 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
                 <h2 className="text-xl font-bold text-center text-gray-800 dark:text-gray-100 mb-2">Forgot Password</h2>
 
                 <div className="flex border-b border-gray-200 dark:border-gray-700 mb-6">
-                    <button onClick={() => { setResetMethod('email'); resetState(); }} className={`w-full py-2 text-sm font-medium transition-colors ${resetMethod === 'email' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500'}`}>Reset via Email</button>
+                    <button onClick={() => { setResetMethod('email'); resetState(); }} className={`w-full py-2 text-sm font-medium transition-colors ${resetMethod === 'email' ? 'text-indigo-600 border-b-2 border-indigo-600 dark:text-indigo-400 dark:border-indigo-400' : 'text-gray-500 dark:text-gray-400'}`}>Reset via Email</button>
                     {platformSettings.isForgotPasswordOtpEnabled && (
-                        <button onClick={() => { setResetMethod('otp'); resetState(); }} className={`w-full py-2 text-sm font-medium transition-colors ${resetMethod === 'otp' ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500'}`}>Reset via Mobile</button>
+                        <button onClick={() => { setResetMethod('otp'); resetState(); }} className={`w-full py-2 text-sm font-medium transition-colors ${resetMethod === 'otp' ? 'text-indigo-600 border-b-2 border-indigo-600 dark:text-indigo-400 dark:border-indigo-400' : 'text-gray-500 dark:text-gray-400'}`}>Reset via Mobile</button>
                     )}
                 </div>
 
@@ -144,7 +270,7 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
                      status === 'sent' ? (
                          <div className="text-center py-4">
                             <h3 className="text-lg font-bold text-teal-500">Reset Link Sent</h3>
-                            <p className="text-gray-600 dark:text-gray-300 mt-2">Please check your email inbox at <span className="font-semibold">{email}</span> for instructions.</p>
+                            <p className="text-gray-600 dark:text-gray-300 mt-2">Please check your email inbox [spm/all mail option] at <span className="font-semibold">{email}</span> for instructions.</p>
                             <button onClick={onClose} className="mt-6 w-full py-2 px-4 text-sm font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700">Close</button>
                         </div>
                     ) : (
@@ -154,7 +280,7 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
                                 <label htmlFor="reset-email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email Address</label>
                                 <input type="email" id="reset-email" placeholder="your@email.com" className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" required value={email} onChange={e => setEmail(e.target.value)} />
                             </div>
-                            {status === 'error' && <p className="text-red-500 text-sm">{error}</p>}
+                            {renderError()}
                             <button type="submit" disabled={status === 'sending'} className="w-full py-2 px-4 text-sm font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">{status === 'sending' ? 'Sending...' : 'Send Reset Link'}</button>
                         </form>
                     )
@@ -172,19 +298,23 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
                             {otpStep === 'enter_number' && (
                                 <>
                                     <p className="text-sm text-gray-600 dark:text-gray-300">Enter your registered mobile number to receive an OTP.</p>
-                                    <div className="flex items-center space-x-2">
-                                        <select value={countryCode} onChange={(e) => setCountryCode(e.target.value)} className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"><option value="+91">IN +91</option></select>
-                                        <input type="tel" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} placeholder="9876543210" required className="block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
-                                    </div>
-                                    {status === 'error' && <p className="text-red-500 text-sm">{error}</p>}
+                                    <input 
+                                        type="tel" 
+                                        value={phoneNumber} 
+                                        onChange={e => setPhoneNumber(e.target.value)} 
+                                        placeholder="Enter mobile number" 
+                                        required 
+                                        className="block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" 
+                                    />
+                                    {renderError()}
                                     <button onClick={handleSendOtp} disabled={status === 'sending'} className="w-full py-2 px-4 text-sm font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">{status === 'sending' ? 'Sending OTP...' : 'Send OTP'}</button>
                                 </>
                             )}
                              {otpStep === 'enter_otp' && (
                                 <>
-                                    <p className="text-sm text-gray-600 dark:text-gray-300">Enter the 6-digit OTP sent to {countryCode}{phoneNumber}.</p>
+                                    <p className="text-sm text-gray-600 dark:text-gray-300">Enter the 6-digit OTP sent to {phoneNumber}.</p>
                                     <input type="text" value={otp} onChange={e => setOtp(e.target.value)} maxLength={6} placeholder="Enter OTP" className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
-                                    {status === 'error' && <p className="text-red-500 text-sm">{error}</p>}
+                                    {renderError()}
                                     <button onClick={handleVerifyOtp} disabled={status === 'verifying'} className="w-full py-2 px-4 text-sm font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">{status === 'verifying' ? 'Verifying...' : 'Verify OTP'}</button>
                                 </>
                             )}
@@ -199,7 +329,7 @@ const ForgotPasswordModal: React.FC<{ onClose: () => void; platformSettings: Pla
                                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Confirm New Password</label>
                                         <input type="password" value={confirmNewPassword} onChange={e => setConfirmNewPassword(e.target.value)} required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
                                     </div>
-                                    {status === 'error' && <p className="text-red-500 text-sm">{error}</p>}
+                                    {renderError()}
                                     <button type="submit" disabled={status === 'sending'} className="w-full py-2 px-4 text-sm font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">{status === 'sending' ? 'Resetting...' : 'Reset Password'}</button>
                                 </form>
                             )}
@@ -220,11 +350,9 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
   const [showStaffLogin, setShowStaffLogin] = useState(false);
   
   // Form fields
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [countryCode, setCountryCode] = useState('+91');
-  const [phoneNumber, setPhoneNumber] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [name, setName] = useState('');
@@ -236,18 +364,6 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
 
-  useEffect(() => {
-    // This sets up the invisible reCAPTCHA verifier.
-    if (!(window as any).recaptchaVerifier) {
-        (window as any).recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', {
-          'size': 'invisible',
-          'callback': () => {
-            // reCAPTCHA solved, allow signInWithPhoneNumber.
-          }
-        }, auth);
-    }
-  }, []);
-  
   const roles: { id: UserRole; label: string }[] = [
     { id: 'brand', label: "Brand" },
     { id: 'influencer', label: "Influencer" },
@@ -255,46 +371,75 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
     { id: 'banneragency', label: "Banner Ads Agency" },
   ];
 
-  const countryCodes = [
-    { name: 'IN', code: '+91' },
-    { name: 'US', code: '+1' },
-    { name: 'GB', code: '+44' },
-    { name: 'AU', code: '+61' },
-    { name: 'DE', code: '+49' },
-  ];
-
   const handleRoleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newRole = e.target.value as UserRole;
     setRole(newRole);
-    // Clear company name if the role doesn't require it, to avoid sending stale data
     if (newRole !== 'livetv' && newRole !== 'banneragency') {
         setCompanyName('');
+    }
+  };
+  
+  const handleIdentifierChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setIdentifier(value);
+
+    if (isOtpSent) {
+        setIsOtpSent(false);
+        setConfirmationResult(null);
+        setOtp('');
+    }
+
+    if (value.includes('@')) {
+        setLoginMethod('password');
+    } else if (/^\+?\d*$/.test(value) && platformSettings.isOtpLoginEnabled) {
+        setLoginMethod('otp');
+    } else {
+        setLoginMethod('password');
     }
   };
 
   const handleSendOtp = async () => {
       setError(null);
-      const fullPhoneNumber = countryCode + phoneNumber;
-      
-      if (!phoneNumber.trim() || !/^\d{7,15}$/.test(phoneNumber)) {
-          setError("Please enter a valid mobile number.");
-          return;
+      let fullPhoneNumber = identifier.trim();
+
+      if (/^\d{10}$/.test(fullPhoneNumber)) {
+        fullPhoneNumber = `+91${fullPhoneNumber}`;
+      } else if (!/^\+\d{11,14}$/.test(fullPhoneNumber)) {
+        setError("Please enter a valid 10-digit mobile number, or a full number with country code (e.g., +919876543210).");
+        return;
       }
       
       setIsLoading(true);
       try {
-          const appVerifier = (window as any).recaptchaVerifier;
+          const recaptchaContainer = document.getElementById('recaptcha-container-login');
+          if (!recaptchaContainer) {
+              throw new Error("reCAPTCHA container element not found in the DOM.");
+          }
+          // Ensure container is empty to avoid reCAPTCHA errors on multiple attempts
+          recaptchaContainer.innerHTML = '';
+
+          const appVerifier = new RecaptchaVerifier(auth, recaptchaContainer, {
+              'size': 'invisible',
+              'callback': () => {},
+              'expired-callback': () => {}
+          });
+          
+          // render() returns a promise that resolves with the widget ID
+          await appVerifier.render();
+
           const confirmation = await authService.sendLoginOtp(fullPhoneNumber, appVerifier);
           setConfirmationResult(confirmation);
           setIsOtpSent(true);
           setError(null);
       } catch (err: any) {
-          console.error(err);
-          setError("Failed to send OTP. Please check the number or try again.");
-          // Reset reCAPTCHA
-          (window as any).recaptchaVerifier.render().then((widgetId: any) => {
-             (window as any).grecaptcha.reset(widgetId);
-          });
+          console.error("OTP Send Error:", err);
+          if (err.code === 'auth/unauthorized-domain') {
+              setError('auth/unauthorized-domain');
+          } else if (err.code === 'auth/internal-error') {
+              setError('auth/internal-error');
+          } else {
+              setError("Failed to send OTP. Please check the number or try again.");
+          }
       } finally {
           setIsLoading(false);
       }
@@ -308,23 +453,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
       try {
         if (authMode === 'login') {
             if (loginMethod === 'password') {
-                const identifier = email;
-                const isPhoneNumber = /^\+?[0-9\s-()]{7,}$/.test(identifier);
-                const isEmail = /\S+@\S+\.\S+/.test(identifier);
-
-                if (isPhoneNumber && !isEmail) {
-                    setError("For mobile number login, please use the 'OTP' tab.");
-                    setIsLoading(false);
-                    return;
-                }
-
-                if (!isEmail) {
-                    setError("Please enter a valid email address for password login.");
-                    setIsLoading(false);
-                    return;
-                }
-
-                await authService.login(email, password);
+                await authService.login(identifier, password);
             } else { // OTP login
                 if (!confirmationResult) {
                     setError("Please send an OTP first.");
@@ -345,12 +474,21 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
                 return;
             }
 
-            await authService.register(email, password, role, name, companyName, mobileNumber);
+            await authService.register(identifier, password, role, name, companyName, mobileNumber);
             alert("Registration successful! Please log in.");
             setAuthMode('login');
         }
       } catch (err: any) {
-          if (err.message.includes('blocked')) {
+          console.error("Auth error:", err);
+          if (err.code === 'auth/unauthorized-domain') {
+            setError('auth/unauthorized-domain');
+          } else if (err.code === 'auth/auth-domain-config-required') {
+            setError('auth/auth-domain-config-required');
+          } else if (err.code === 'auth/internal-error') {
+              setError('auth/internal-error');
+          } else if (err.code === 'auth/invalid-credential') {
+              setError('Invalid credentials. Please check your email/mobile and password and try again.');
+          } else if (err.message && err.message.includes('blocked')) {
             setError(err.message);
           } else {
             setError('Authentication failed. Please check your credentials.');
@@ -360,23 +498,96 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
       }
   };
 
-  const TabButton: React.FC<{ method: LoginMethod; children: React.ReactNode }> = ({ method, children }) => (
-    <button
-      type="button"
-      onClick={() => setLoginMethod(method)}
-      className={`w-full py-2 text-sm font-medium transition-colors ${
-        loginMethod === method
-          ? 'text-indigo-600 border-b-2 border-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
-          : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
-      }`}
-    >
-      {children}
-    </button>
-  );
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    setIsLoading(true);
+    try {
+        await authService.signInWithGoogle(role);
+    } catch (err: any) {
+        if (err.code !== 'auth/popup-closed-by-user') {
+             if (err.code === 'auth/unauthorized-domain') {
+                 setError('auth/unauthorized-domain');
+             } else if (err.code === 'auth/auth-domain-config-required') {
+                setError('auth/auth-domain-config-required');
+             } else if (err.code === 'auth/internal-error') {
+                setError('auth/internal-error');
+             } else if (err.message && err.message.includes('blocked')) {
+                setError('This account has been blocked by an administrator.');
+             } else {
+                setError(err.message || 'Google Sign-In failed. Please try again.');
+             }
+        }
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
+  const renderError = () => {
+    if (!error) return null;
+
+    let title = "Authentication Error";
+    let content: React.ReactNode = <p>{error}</p>;
+
+    if (error === 'auth/unauthorized-domain') {
+        title = "Action Required: Authorize Domain";
+        content = (
+            <>
+                <p>Firebase authentication (Google, OTP, Password Reset) requires this app's domain to be on an allowlist for security. This is a one-time setup for this preview URL.</p>
+                <ol className="list-decimal list-inside space-y-2 mt-3 text-sm">
+                    <li>
+                        <strong>Go to Auth Settings:</strong>
+                        <a 
+                            href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings/domains`} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="ml-2 font-medium text-indigo-600 dark:text-indigo-400 underline hover:text-indigo-800 dark:hover:text-indigo-300"
+                        >
+                            Click to open "Authorized domains"
+                        </a>
+                    </li>
+                    <li>
+                        <strong>Add Domain:</strong> On the Firebase page, click <strong>"Add domain"</strong>.
+                    </li>
+                    <li>
+                        <strong>Copy & Paste:</strong> Copy the domain below and paste it into the Firebase dialog.
+                    </li>
+                </ol>
+                <CopyableInput value={window.location.hostname} />
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">After adding the domain, you can try signing in again. If it fails, a full page refresh might be needed.</p>
+            </>
+        );
+    } else if (error === 'auth/internal-error') {
+        title = "Internal Auth Error";
+        content = (
+            <p>This often indicates a Firebase project configuration issue. Please verify the following in your Firebase Console:
+                <ul className="list-disc list-inside mt-2 space-y-1">
+                    <li><strong>Sign-in Providers:</strong> In Authentication &rarr; Sign-in method, ensure 'Email/Password', 'Phone', and 'Google' are ALL enabled.</li>
+                    <li><strong>Support Email:</strong> In Project Settings (⚙️ icon), make sure a 'Support email' is selected. This is required for Google Sign-In.</li>
+                </ul>
+            </p>
+        );
+    } else if (error === 'auth/auth-domain-config-required') {
+        title = "Auth Domain Missing";
+        content = (
+            <p>The Firebase 'authDomain' is missing from your configuration. This can happen if the app's hostname cannot be determined. Please ensure your Firebase config in <code>services/firebase.ts</code> includes a valid 'authDomain'.</p>
+        );
+    }
+
+    return (
+        <div className="mt-4 text-left bg-red-50 dark:bg-red-900/20 p-4 rounded-lg border-l-4 border-red-500 dark:border-red-600">
+            <h3 className="font-bold text-red-800 dark:text-red-200 mb-2 flex items-center gap-2">
+                <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0" />
+                {title}
+            </h3>
+            <div className="text-red-700 dark:text-red-300 text-sm space-y-2 pl-7">{content}</div>
+        </div>
+    );
+  };
+
 
   return (
     <>
-        <div id="recaptcha-container"></div>
+        <div id="recaptcha-container-login"></div>
         <div className="min-h-screen py-4 bg-gray-50 dark:bg-gray-900 flex flex-col justify-center items-center px-4">
             <div className="w-full max-w-md">
                 <div className="flex justify-center w-full mb-8">
@@ -410,15 +621,68 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
 
                     <form onSubmit={handleAuthSubmit}>
                         {authMode === 'login' && (
-                            <div className="flex border-b border-gray-200 dark:border-gray-700 mb-6">
-                                <TabButton method="password">Password</TabButton>
-                                {platformSettings.isOtpLoginEnabled && <TabButton method="otp">OTP</TabButton>}
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email / Mobile Number</label>
+                                    <input
+                                        type="text"
+                                        value={identifier}
+                                        onChange={handleIdentifierChange}
+                                        placeholder="your@email.com or 9876543210"
+                                        required
+                                        className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"
+                                    />
+                                </div>
+
+                                {loginMethod === 'password' ? (
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
+                                        <input
+                                            type="password"
+                                            value={password}
+                                            onChange={e => setPassword(e.target.value)}
+                                            required
+                                            className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"
+                                        />
+                                        <div className="flex justify-end mt-1">
+                                            <button type="button" onClick={() => setShowForgotPassword(true)} className="text-sm font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
+                                                Forgot password?
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    platformSettings.isOtpLoginEnabled && (
+                                        <div>
+                                            <label htmlFor="otp" className="block text-sm font-medium text-gray-700 dark:text-gray-300">OTP Code</label>
+                                            <div className="flex items-center space-x-2 mt-1">
+                                                <input
+                                                    type="text"
+                                                    id="otp"
+                                                    value={otp}
+                                                    onChange={(e) => setOtp(e.target.value)}
+                                                    maxLength={6}
+                                                    placeholder="Enter 6-digit OTP"
+                                                    disabled={!isOtpSent}
+                                                    className="block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm disabled:bg-gray-200 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200 dark:disabled:bg-gray-600"
+                                                    required
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={handleSendOtp}
+                                                    disabled={isLoading || isOtpSent}
+                                                    className="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-100 rounded-lg hover:bg-indigo-200 whitespace-nowrap disabled:opacity-50 dark:bg-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-900"
+                                                >
+                                                    {isOtpSent ? 'Sent' : 'Send OTP'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )
+                                )}
                             </div>
                         )}
                         
-                        <div className="space-y-4">
-                             {authMode === 'signup' && (
-                                <>
+                        {authMode === 'signup' && (
+                                <div className="space-y-4">
                                  <div>
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Full Name</label>
                                     <input type="text" value={name} onChange={e => setName(e.target.value)} required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"/>
@@ -441,7 +705,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
                                 </div>
                                  <div>
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email Address</label>
-                                    <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
+                                    <input type="email" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="your@email.com" required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Create Password</label>
@@ -451,95 +715,16 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
                                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Confirm Password</label>
                                     <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
                                 </div>
-                                </>
+                                </div>
                             )}
-                            
-                            {authMode === 'login' && loginMethod === 'password' && (
-                                <>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email / Mobile Number</label>
-                                    <input type="text" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com or +14155552671" required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
-                                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
-                                </div>
-                                </>
-                            )}
-                            
-                             {authMode === 'login' && loginMethod === 'otp' && platformSettings.isOtpLoginEnabled && (
-                                <>
-                                <div>
-                                    <label htmlFor="phone" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Mobile Number</label>
-                                    <div className="flex items-center space-x-2 mt-1">
-                                        <select
-                                            value={countryCode}
-                                            onChange={(e) => setCountryCode(e.target.value)}
-                                            disabled={isOtpSent}
-                                            className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm disabled:bg-gray-200 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200 dark:disabled:bg-gray-600"
-                                        >
-                                            {countryCodes.map(c => <option key={c.code} value={c.code}>{c.name} {c.code}</option>)}
-                                        </select>
-                                        <input 
-                                            type="tel" 
-                                            id="phone" 
-                                            value={phoneNumber}
-                                            onChange={e => setPhoneNumber(e.target.value)}
-                                            placeholder="9876543210"
-                                            disabled={isOtpSent}
-                                            required 
-                                            className="block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm disabled:bg-gray-200 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200 dark:disabled:bg-gray-600" 
-                                        />
-                                        <button 
-                                            type="button" 
-                                            onClick={handleSendOtp}
-                                            disabled={isLoading || isOtpSent}
-                                            className="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-100 rounded-lg hover:bg-indigo-200 whitespace-nowrap disabled:opacity-50 dark:bg-indigo-900/50 dark:text-indigo-300 dark:hover:bg-indigo-900"
-                                        >
-                                            {isOtpSent ? 'Sent' : 'Send OTP'}
-                                        </button>
-                                    </div>
-                                </div>
 
-                                {isOtpSent && (
-                                    <div>
-                                        <label htmlFor="otp" className="block text-sm font-medium text-gray-700 dark:text-gray-300">OTP Code</label>
-                                        <input 
-                                            type="text" 
-                                            id="otp" 
-                                            value={otp}
-                                            onChange={(e) => setOtp(e.target.value)}
-                                            maxLength={6} 
-                                            placeholder="Enter 6-digit OTP" 
-                                            className="mt-1 block w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-md shadow-sm dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" 
-                                            required
-                                        />
-                                    </div>
-                                )}
-                                </>
-                            )}
-                        </div>
-
-                        {error && <p className="text-red-500 text-sm mt-4 text-center">{error}</p>}
+                        {renderError()}
                         
                         <button type="submit" disabled={isLoading} className="mt-8 w-full py-3 px-4 text-sm font-semibold rounded-lg text-white bg-gradient-to-r from-teal-400 to-indigo-600 shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed">
                             {isLoading ? 'Processing...' : (authMode === 'login' ? `Login` : 'Sign Up')}
                         </button>
-                    </form>
-                    
-                    <div className="mt-6 space-y-4 text-center text-sm">
-                        {authMode === 'login' && (
-                            <div className="text-gray-600 dark:text-gray-400">
-                                <button type="button" onClick={() => setShowForgotPassword(true)} className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300">
-                                    Forgot password?
-                                </button>
-                                <span className="text-gray-300 dark:text-gray-600 mx-2">|</span>
-                                <button type="button" onClick={() => setShowStaffLogin(true)} className="font-medium text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200">
-                                    BIGYAPON Staff Login
-                                </button>
-                            </div>
-                        )}
-                        <div className="text-gray-600 dark:text-gray-400 mt-8">
+
+                        <div className="text-center text-sm text-gray-600 mt-4 dark:text-gray-400">
                             {authMode === 'login' ? (
                                 <>
                                     Don't have an account?{' '}
@@ -570,7 +755,36 @@ const LoginPage: React.FC<LoginPageProps> = ({ platformSettings }) => {
                                 </>
                             )}
                         </div>
+                    </form>
+
+                    <div className="mt-6 relative">
+                        <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                            <div className="w-full border-t border-gray-300 dark:border-gray-600" />
+                        </div>
+                        <div className="relative flex justify-center text-sm">
+                            <span className="px-2 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400">Or</span>
+                        </div>
                     </div>
+
+                    <div className="mt-6">
+                        <button
+                            type="button"
+                            onClick={handleGoogleSignIn}
+                            disabled={isLoading}
+                            className="w-full flex justify-center items-center py-2.5 px-4 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm bg-white dark:bg-gray-800 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                        >
+                            <GoogleIcon className="w-5 h-5 mr-3" />
+                            Continue with Google
+                        </button>
+                    </div>
+                    
+                    {authMode === 'login' && (
+                        <div className="mt-6 text-center text-sm text-gray-600 dark:text-gray-400">
+                            <button type="button" onClick={() => setShowStaffLogin(true)} className="font-medium text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200">
+                                BIGYAPON Staff Login
+                            </button>
+                        </div>
+                    )}
 
                 </div>
             </div>

@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { User, PlatformSettings, Boost, BoostDuration } from '../types';
 import { apiService } from '../services/apiService';
@@ -45,12 +46,24 @@ const BoostPage: React.FC<BoostPageProps> = ({ user, platformSettings, onBoostAc
 
     const activeProfileBoost = boosts.find(b => b.targetType === 'profile' && (b.expiresAt as Timestamp).toDate() > new Date());
 
+    const discountSetting = platformSettings.discountSettings.creatorProfileBoost;
+
+    const getDiscountedPrice = (originalPrice: number) => {
+        if (discountSetting.isEnabled && discountSetting.percentage > 0) {
+            return originalPrice * (1 - discountSetting.percentage / 100);
+        }
+        return originalPrice;
+    };
+
     const boostPlans = [
-        { id: '1w' as BoostDuration, name: '1 Week', price: platformSettings.boostPrices['1w'] },
-        { id: '2w' as BoostDuration, name: '2 Weeks', price: platformSettings.boostPrices['2w'] },
-        { id: '1m' as BoostDuration, name: '1 Month', price: platformSettings.boostPrices['1m'] },
-        { id: '1y' as BoostDuration, name: '1 Year', price: platformSettings.boostPrices['1y'] },
-    ];
+        { id: '1w' as BoostDuration, name: '1 Week', originalPrice: platformSettings.boostPrices['1w'] },
+        { id: '2w' as BoostDuration, name: '2 Weeks', originalPrice: platformSettings.boostPrices['2w'] },
+        { id: '1m' as BoostDuration, name: '1 Month', originalPrice: platformSettings.boostPrices['1m'] },
+        { id: '1y' as BoostDuration, name: '1 Year', originalPrice: platformSettings.boostPrices['1y'] },
+    ].map(plan => ({
+        ...plan,
+        price: getDiscountedPrice(plan.originalPrice)
+    }));
 
     return (
         <div className="max-w-4xl mx-auto space-y-8">
@@ -82,10 +95,18 @@ const BoostPage: React.FC<BoostPageProps> = ({ user, platformSettings, onBoostAc
                     {boostPlans.map((plan) => (
                         <div key={plan.id} className="bg-white rounded-2xl shadow-lg p-6 flex flex-col text-center transform hover:-translate-y-2 transition-transform duration-300">
                             <h3 className="text-xl font-bold">{plan.name}</h3>
-                            <p className="text-3xl font-extrabold text-gray-800 my-4">₹{plan.price}</p>
+                             <div className="my-4">
+                                {discountSetting.isEnabled && plan.price !== plan.originalPrice && (
+                                    <div>
+                                        <del className="text-xl font-bold text-gray-400">₹{plan.originalPrice.toLocaleString('en-IN')}</del>
+                                        <p className="text-sm font-semibold text-green-600">{discountSetting.percentage}% OFF</p>
+                                    </div>
+                                )}
+                                <p className="text-3xl font-extrabold text-gray-800">₹{plan.price.toLocaleString('en-IN')}</p>
+                            </div>
                             <div className="flex-grow"></div>
                             <button
-                                onClick={() => setPayingForPlan(plan)}
+                                onClick={() => setPayingForPlan({ plan: plan.id, price: plan.price })}
                                 disabled={isLoading || !!activeProfileBoost || user.role === 'banneragency'}
                                 title={user.role === 'banneragency' ? 'Profile boosting is not currently available for agencies.' : undefined}
                                 className="w-full mt-4 py-3 font-semibold text-white bg-gradient-to-r from-purple-500 to-indigo-600 rounded-lg shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"

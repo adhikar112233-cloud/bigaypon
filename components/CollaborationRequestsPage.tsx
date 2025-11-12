@@ -12,6 +12,7 @@ interface CollaborationRequestsPageProps {
 
 const RequestStatusBadge: React.FC<{ status: CollabRequestStatus }> = ({ status }) => {
     const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize whitespace-nowrap";
+    // FIX: Add missing 'refund_pending_admin_review' status to satisfy the type.
     const statusMap: Record<CollabRequestStatus, { text: string; classes: string }> = {
         pending: { text: "Pending", classes: "text-yellow-800 bg-yellow-100" },
         rejected: { text: "Rejected", classes: "text-red-800 bg-red-100" },
@@ -23,6 +24,7 @@ const RequestStatusBadge: React.FC<{ status: CollabRequestStatus }> = ({ status 
         completed: { text: "Completed", classes: "text-gray-800 bg-gray-100" },
         disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100" },
         brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100" },
+        refund_pending_admin_review: { text: "Refund Under Review", classes: "text-blue-800 bg-blue-100" },
     };
     const { text, classes } = statusMap[status] || { text: status, classes: "text-gray-800 bg-gray-100" };
     return <span className={`${baseClasses} ${classes}`}>{text}</span>;
@@ -75,7 +77,10 @@ const CollaborationItem: React.FC<{
             </button>
             <div className="flex-1">
                 <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
-                    <h3 className="text-lg font-bold text-gray-800">{req.title}</h3>
+                    <div>
+                        <h3 className="text-lg font-bold text-gray-800">{req.title}</h3>
+                        {req.collabId && <p className="text-xs font-mono text-gray-400">{req.collabId}</p>}
+                    </div>
                     <RequestStatusBadge status={req.status} />
                 </div>
                 <p className="text-sm font-medium text-gray-600">From: {req.brandName}</p>
@@ -98,32 +103,30 @@ const CollaborationRequestsPage: React.FC<CollaborationRequestsPageProps> = ({ u
     const [selectedRequest, setSelectedRequest] = useState<CollaborationRequest | null>(null);
     const [filter, setFilter] = useState<'pending' | 'active' | 'archived'>('pending');
 
-    const fetchRequests = async () => {
-        setIsLoading(true);
-        try {
-            const data = await apiService.getCollabRequestsForInfluencer(user.id);
-            setRequests(data);
-        } catch (err) {
-            console.error(err);
-            setError("Failed to fetch collaboration requests.");
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
     useEffect(() => {
-        fetchRequests();
+        setIsLoading(true);
+        const unsubscribe = apiService.getCollabRequestsForInfluencerListener(
+            user.id,
+            (data) => {
+                setRequests(data);
+                setIsLoading(false);
+                setError(null);
+            },
+            (err) => {
+                console.error(err);
+                setError("Failed to fetch collaboration requests.");
+                setIsLoading(false);
+            }
+        );
+        return () => unsubscribe();
     }, [user.id]);
 
     const handleUpdate = async (reqId: string, data: Partial<CollaborationRequest>) => {
-        // Optimistic update
-        setRequests(prev => prev.map(req => req.id === reqId ? { ...req, ...data } : req));
         try {
-            await apiService.updateCollaborationRequest(reqId, data);
+            await apiService.updateCollaborationRequest(reqId, data, user.id);
         } catch (error) {
             console.error("Failed to update request:", error);
-            // Optionally revert UI change and show error
-            fetchRequests(); 
+            // Optionally show an error message
         } finally {
             setModal(null);
             setSelectedRequest(null);
@@ -203,7 +206,7 @@ const CollaborationRequestsPage: React.FC<CollaborationRequestsPageProps> = ({ u
     };
     
     const renderStatusInfo = (req: CollaborationRequest) => {
-        let info = null;
+        let info: string | null = null;
         switch (req.status) {
             case 'influencer_offer': info = `You offered ${req.currentOffer?.amount}. Waiting for brand to respond.`; break;
             case 'agreement_reached': info = `Agreement reached for ${req.finalAmount}. Waiting for brand to complete payment.`; break;
@@ -215,9 +218,16 @@ const CollaborationRequestsPage: React.FC<CollaborationRequestsPageProps> = ({ u
                 else info = "Brand has confirmed completion. You can now request your payment.";
                 break;
             case 'rejected': info = req.rejectionReason ? `Rejected. Reason: ${req.rejectionReason}` : 'Collaboration rejected.'; break;
+            case 'refund_pending_admin_review': info = "The brand has requested a refund. An admin will review the case."; break;
         }
+        
         if (!info) return null;
-        return <div className="mt-4 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">{info}</div>;
+
+        return (
+            <div className="mt-4 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">
+                <p>{info}</p>
+            </div>
+        );
     };
     
     const { active, pending, archived } = useMemo(() => {
@@ -226,12 +236,12 @@ const CollaborationRequestsPage: React.FC<CollaborationRequestsPageProps> = ({ u
         const archived: CollaborationRequest[] = [];
 
         requests.forEach(req => {
-            if (['in_progress', 'work_submitted'].includes(req.status)) {
+            if (['in_progress', 'work_submitted', 'disputed', 'brand_decision_pending', 'refund_pending_admin_review'].includes(req.status)) {
                 active.push(req);
-            } else if (['pending', 'brand_offer'].includes(req.status)) {
-                pending.push(req);
-            } else {
+            } else if (['completed', 'rejected'].includes(req.status)) {
                 archived.push(req);
+            } else { // Catches 'pending', 'brand_offer', 'influencer_offer', 'agreement_reached'
+                pending.push(req);
             }
         });
 

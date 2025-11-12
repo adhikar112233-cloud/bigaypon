@@ -34,11 +34,19 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ user, influencer, onClose }) =>
     };
 
     useEffect(() => {
-        const fetchMessages = async () => {
-            const fetchedMessages = await apiService.getMessages(user.id, influencer.id);
-            setMessages(fetchedMessages);
-        };
-        fetchMessages();
+        const unsubscribe = apiService.getMessagesListener(
+            user.id,
+            influencer.id,
+            (fetchedMessages) => {
+                setMessages(fetchedMessages);
+            },
+            (error) => {
+                console.error("Error fetching real-time messages:", error);
+            }
+        );
+    
+        // Cleanup listener on component unmount
+        return () => unsubscribe();
     }, [user.id, influencer.id]);
 
     useEffect(scrollToBottom, [messages]);
@@ -66,18 +74,29 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ user, influencer, onClose }) =>
         e.preventDefault();
         if (newMessage.trim() === '' && attachments.length === 0) return;
 
-        const tempMessageId = doc(collection(db, 'messages')).id;
-        const attachmentUploadPromises = attachments.map(async (file) => {
-            const url = await apiService.uploadMessageAttachment(tempMessageId, file);
-            return { url, type: getFileType(file), name: file.name };
-        });
-        
-        const uploadedAttachments = await Promise.all(attachmentUploadPromises);
-
-        const sentMessage = await apiService.sendMessage(newMessage, user.id, influencer.id, uploadedAttachments);
-        setMessages(prev => [...prev, sentMessage]);
+        // Temporarily disable input while sending
+        const originalMessage = newMessage;
+        const originalAttachments = [...attachments];
         setNewMessage('');
         setAttachments([]);
+
+        try {
+            const tempMessageId = doc(collection(db, 'messages')).id;
+            const attachmentUploadPromises = originalAttachments.map(async (file) => {
+                const url = await apiService.uploadMessageAttachment(tempMessageId, file);
+                return { url, type: getFileType(file), name: file.name };
+            });
+            
+            const uploadedAttachments = await Promise.all(attachmentUploadPromises);
+
+            await apiService.sendMessage(originalMessage, user.id, influencer.id, uploadedAttachments);
+            // No need to manually add to state, listener will pick it up
+        } catch (error) {
+            console.error("Failed to send message:", error);
+            // Revert UI on failure
+            setNewMessage(originalMessage);
+            setAttachments(originalAttachments);
+        }
     };
 
     const handleGenerateMessage = async () => {

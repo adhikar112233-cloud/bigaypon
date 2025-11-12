@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { User, Campaign, PlatformSettings, BoostDuration } from '../types';
 import { apiService } from '../services/apiService';
@@ -38,12 +39,25 @@ const BoostCampaignModal: React.FC<BoostCampaignModalProps> = ({ user, campaign,
                 setPayingForPlan(null);
             });
     };
+    
+    const discountSetting = platformSettings.discountSettings.brandCampaignBoost;
+
+    const getDiscountedPrice = (originalPrice: number) => {
+        if (discountSetting.isEnabled && discountSetting.percentage > 0) {
+            return originalPrice * (1 - discountSetting.percentage / 100);
+        }
+        return originalPrice;
+    };
 
     const boostPlans = [
-        { id: '1w' as BoostDuration, name: '1 Week', price: platformSettings.boostPrices['1w'] },
-        { id: '2w' as BoostDuration, name: '2 Weeks', price: platformSettings.boostPrices['2w'] },
-        { id: '1m' as BoostDuration, name: '1 Month', price: platformSettings.boostPrices['1m'] },
-    ];
+        { id: '1w' as BoostDuration, name: '1 Week', originalPrice: platformSettings.boostPrices['1w'] },
+        { id: '2w' as BoostDuration, name: '2 Weeks', originalPrice: platformSettings.boostPrices['2w'] },
+        { id: '1m' as BoostDuration, name: '1 Month', originalPrice: platformSettings.boostPrices['1m'] },
+    ].map(plan => ({
+        ...plan,
+        price: getDiscountedPrice(plan.originalPrice)
+    }));
+
 
     return (
         <>
@@ -69,10 +83,18 @@ const BoostCampaignModal: React.FC<BoostCampaignModalProps> = ({ user, campaign,
                                 {boostPlans.map((plan) => (
                                     <div key={plan.id} className="border dark:border-gray-700 rounded-lg p-6 flex flex-col text-center">
                                         <h3 className="text-xl font-bold dark:text-gray-200">{plan.name}</h3>
-                                        <p className="text-3xl font-extrabold text-gray-800 dark:text-gray-100 my-4">₹{plan.price}</p>
+                                        <div className="my-4">
+                                            {discountSetting.isEnabled && plan.price !== plan.originalPrice && (
+                                                <div>
+                                                    <del className="text-xl font-bold text-gray-400">₹{plan.originalPrice.toLocaleString('en-IN')}</del>
+                                                    <p className="text-sm font-semibold text-green-600">{discountSetting.percentage}% OFF</p>
+                                                </div>
+                                            )}
+                                            <p className="text-3xl font-extrabold text-gray-800 dark:text-gray-100">₹{plan.price.toLocaleString('en-IN')}</p>
+                                        </div>
                                         <div className="flex-grow"></div>
                                         <button
-                                            onClick={() => setPayingForPlan(plan)}
+                                            onClick={() => setPayingForPlan({ plan: plan.id, price: plan.price })}
                                             disabled={isLoading}
                                             className="w-full mt-4 py-2 font-semibold text-white bg-gradient-to-r from-purple-500 to-indigo-600 rounded-lg shadow-sm hover:shadow-lg disabled:opacity-50"
                                         >

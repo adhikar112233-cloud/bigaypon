@@ -10,8 +10,6 @@ interface HeaderProps {
   setActiveView: (view: View) => void;
   platformSettings: PlatformSettings;
   onConversationSelected: (participant: ConversationParticipant) => void;
-  allUsers: User[];
-  allInfluencers: Influencer[];
   onMobileNavToggle: () => void;
   theme: 'light' | 'dark';
   setTheme: (theme: 'light' | 'dark') => void;
@@ -19,7 +17,7 @@ interface HeaderProps {
 
 const DEFAULT_AVATAR_URL = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2NjYyI+PHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNHYyaDRjMCAwIDAtMSAwLTJoMTJ2Mmg0di00YzAtMi42Ni01LjMzLTQtOC00eiIvPjwvc3ZnPg==';
 
-const Header: React.FC<HeaderProps> = ({ user, onLogoutClick, setActiveView, platformSettings, onConversationSelected, allUsers, allInfluencers, onMobileNavToggle, theme, setTheme }) => {
+const Header: React.FC<HeaderProps> = ({ user, onLogoutClick, setActiveView, platformSettings, onConversationSelected, onMobileNavToggle, theme, setTheme }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isConversationsOpen, setIsConversationsOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -58,7 +56,7 @@ const Header: React.FC<HeaderProps> = ({ user, onLogoutClick, setActiveView, pla
       setIsLoadingConversations(true);
       setIsConversationsOpen(true);
       try {
-        const convos = await apiService.getConversations(user.id, allUsers, allInfluencers);
+        const convos = await apiService.getConversations(user.id);
         setConversations(convos);
       } catch (error) {
         console.error("Failed to fetch conversations:", error);

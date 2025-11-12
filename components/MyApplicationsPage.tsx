@@ -11,7 +11,7 @@ interface MyApplicationsPageProps {
 
 const ApplicationStatusBadge: React.FC<{ status: CampaignApplicationStatus }> = ({ status }) => {
     const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize";
-    // Fix: Add missing 'brand_decision_pending' status to satisfy the type.
+    // Fix: Add missing 'brand_decision_pending' and 'refund_pending_admin_review' statuses to satisfy the type.
     const statusMap: Record<CampaignApplicationStatus, { text: string; classes: string }> = {
         pending_brand_review: { text: "Pending Review", classes: "text-yellow-800 bg-yellow-100" },
         rejected: { text: "Rejected", classes: "text-red-800 bg-red-100" },
@@ -23,6 +23,7 @@ const ApplicationStatusBadge: React.FC<{ status: CampaignApplicationStatus }> = 
         completed: { text: "Completed", classes: "text-gray-800 bg-gray-100" },
         disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100" },
         brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100" },
+        refund_pending_admin_review: { text: "Refund Under Review", classes: "text-blue-800 bg-blue-100" },
     };
     const { text, classes } = statusMap[status] || { text: status.replace(/_/g, ' '), classes: "text-gray-800 bg-gray-100" };
     return <span className={`${baseClasses} ${classes}`}>{text}</span>;
@@ -95,7 +96,7 @@ export const MyApplicationsPage: React.FC<MyApplicationsPageProps> = ({ user, pl
 
     const handleUpdate = async (appId: string, data: Partial<CampaignApplication>) => {
         setApplications(prev => prev.map(app => app.id === appId ? { ...app, ...data } : app));
-        await apiService.updateCampaignApplication(appId, data);
+        await apiService.updateCampaignApplication(appId, data, user.id);
         setModal(null);
         setSelectedApp(null);
     };
@@ -177,6 +178,7 @@ export const MyApplicationsPage: React.FC<MyApplicationsPageProps> = ({ user, pl
                 if (app.paymentStatus === 'payout_requested') info = "Payout requested. Under review by admin.";
                 else if (app.paymentStatus === 'payout_complete') info = "Payment processed. Thank you!";
                 break;
+            case 'refund_pending_admin_review': info = "The brand has requested a refund. An admin will review the case."; break;
         }
         if (!info) return null;
         return <div className="mt-4 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">{info}</div>;
@@ -188,11 +190,11 @@ export const MyApplicationsPage: React.FC<MyApplicationsPageProps> = ({ user, pl
         const archived: CampaignApplication[] = [];
 
         applications.forEach(app => {
-            if (['in_progress', 'work_submitted'].includes(app.status)) {
+            if (['in_progress', 'work_submitted', 'disputed', 'brand_decision_pending', 'refund_pending_admin_review'].includes(app.status)) {
                 active.push(app);
-            } else if (['rejected', 'completed', 'disputed'].includes(app.status)) {
+            } else if (['completed', 'rejected'].includes(app.status)) {
                 archived.push(app);
-            } else {
+            } else { // Catches 'pending_brand_review', 'brand_counter_offer', 'influencer_counter_offer', 'agreement_reached'
                 pending.push(app);
             }
         });

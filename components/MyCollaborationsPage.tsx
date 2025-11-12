@@ -13,20 +13,21 @@ interface MyCollaborationsPageProps {
 }
 
 const RequestStatusBadge: React.FC<{ status: CollabRequestStatus }> = ({ status }) => {
-    const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize";
+    const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize whitespace-nowrap";
     const statusMap: Record<CollabRequestStatus, { text: string; classes: string }> = {
-        pending: { text: "Pending Influencer Response", classes: "text-yellow-800 bg-yellow-100" },
-        rejected: { text: "Rejected", classes: "text-red-800 bg-red-100" },
-        influencer_offer: { text: "Offer Received", classes: "text-purple-800 bg-purple-100" },
-        brand_offer: { text: "Offer Sent", classes: "text-blue-800 bg-blue-100" },
-        agreement_reached: { text: "Payment Pending", classes: "text-green-800 bg-green-100" },
-        in_progress: { text: "In Progress", classes: "text-cyan-800 bg-cyan-100" },
-        work_submitted: { text: "Work Submitted", classes: "text-indigo-800 bg-indigo-100" },
-        completed: { text: "Completed", classes: "text-gray-800 bg-gray-100" },
-        disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100" },
-        brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100" },
+        pending: { text: "Pending Influencer Response", classes: "text-yellow-800 bg-yellow-100 dark:bg-yellow-900/50 dark:text-yellow-300" },
+        rejected: { text: "Rejected", classes: "text-red-800 bg-red-100 dark:bg-red-900/50 dark:text-red-300" },
+        influencer_offer: { text: "Offer Received", classes: "text-purple-800 bg-purple-100 dark:bg-purple-900/50 dark:text-purple-300" },
+        brand_offer: { text: "Offer Sent", classes: "text-blue-800 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300" },
+        agreement_reached: { text: "Payment Pending", classes: "text-green-800 bg-green-100 dark:bg-green-900/50 dark:text-green-300" },
+        in_progress: { text: "In Progress", classes: "text-cyan-800 bg-cyan-100 dark:bg-cyan-900/50 dark:text-cyan-300" },
+        work_submitted: { text: "Work Submitted", classes: "text-indigo-800 bg-indigo-100 dark:bg-indigo-900/50 dark:text-indigo-300" },
+        completed: { text: "Completed", classes: "text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-300" },
+        disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100 dark:bg-orange-900/50 dark:text-orange-300" },
+        brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-300" },
+        refund_pending_admin_review: { text: "Refund Under Review", classes: "text-blue-800 bg-blue-100 dark:bg-blue-900/50 dark:text-blue-300" },
     };
-    const { text, classes } = statusMap[status] || { text: status, classes: "text-gray-800 bg-gray-100" };
+    const { text, classes } = statusMap[status] || { text: status, classes: "text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-300" };
     return <span className={`${baseClasses} ${classes}`}>{text}</span>;
 };
 
@@ -37,7 +38,7 @@ const OfferModal: React.FC<{ request: CollaborationRequest; onClose: () => void;
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm">
                 <h3 className="text-lg font-bold mb-4 dark:text-gray-100">Send Counter Offer</h3>
                 <p className="text-sm text-gray-600 dark:text-gray-300 mb-4">Influencer's current offer is {request.currentOffer?.amount}. Propose a new amount.</p>
-                <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="e.g., 8000" className="w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"/>
+                <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="e.g., 8000" className="w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200" />
                 <div className="flex justify-end space-x-2 mt-4">
                     <button onClick={onClose} className="px-4 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-600 dark:text-gray-200">Cancel</button>
                     <button onClick={() => onConfirm(amount)} className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white">Send Offer</button>
@@ -60,7 +61,10 @@ const CollaborationItem: React.FC<{
             </button>
             <div className="flex-1">
                 <div className="flex justify-between items-center">
-                    <h3 className="text-lg font-bold text-gray-800">{req.title}</h3>
+                    <div>
+                        <h3 className="text-lg font-bold text-gray-800">{req.title}</h3>
+                        {req.collabId && <p className="text-xs font-mono text-gray-400">{req.collabId}</p>}
+                    </div>
                     <RequestStatusBadge status={req.status} />
                 </div>
                 <p className="text-sm font-medium text-gray-600">With: {req.influencerName}</p>
@@ -83,32 +87,31 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
     const [payingRequest, setPayingRequest] = useState<CollaborationRequest | null>(null);
     const [disputingRequest, setDisputingRequest] = useState<CollaborationRequest | null>(null);
     const [filter, setFilter] = useState<'pending' | 'active' | 'archived'>('pending');
-
-    const fetchRequests = async () => {
-        setIsLoading(true);
-        try {
-            const data = await apiService.getCollabRequestsForBrand(user.id);
-            setRequests(data);
-        } catch (err) {
-            console.error(err);
-            setError("Failed to fetch collaborations.");
-        } finally {
-            setIsLoading(false);
-        }
-    };
+    const [confirmAction, setConfirmAction] = useState<{req: CollaborationRequest, action: 'approve_payment'} | null>(null);
 
     useEffect(() => {
-        fetchRequests();
+        setIsLoading(true);
+        const unsubscribe = apiService.getCollabRequestsForBrandListener(
+            user.id,
+            (data) => {
+                setRequests(data);
+                setIsLoading(false);
+                setError(null);
+            },
+            (err) => {
+                console.error(err);
+                setError("Failed to fetch collaborations.");
+                setIsLoading(false);
+            }
+        );
+        return () => unsubscribe();
     }, [user.id]);
 
     const handleUpdate = async (reqId: string, data: Partial<CollaborationRequest>) => {
-        // Optimistic update
-        setRequests(prev => prev.map(req => req.id === reqId ? { ...req, ...data } : req));
         try {
-             await apiService.updateCollaborationRequest(reqId, data);
+             await apiService.updateCollaborationRequest(reqId, data, user.id);
         } catch(err) {
             console.error("Update failed", err);
-            fetchRequests(); // Revert on failure
         } finally {
             setModal(null);
             setSelectedRequest(null);
@@ -140,13 +143,19 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
                 setDisputingRequest(req);
                 break;
             case 'brand_complete_disputed':
-                apiService.brandCompletesDisputedWork(req.id, 'direct');
-                handleUpdate(req.id, { status: 'completed' });
+                setConfirmAction({ req, action: 'approve_payment' });
                 break;
             case 'brand_request_refund':
                 onInitiateRefund(req);
                 break;
         }
+    };
+
+    const executeConfirmAction = () => {
+        if (!confirmAction) return;
+        const { req } = confirmAction;
+        handleUpdate(req.id, { status: 'completed' });
+        setConfirmAction(null);
     };
 
     const handlePaymentSuccess = () => {
@@ -174,8 +183,8 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
                 actions.push({ label: 'Dispute/Incomplete', action: 'work_incomplete', style: 'bg-orange-500 text-white' });
                 break;
             case 'brand_decision_pending':
-                actions.push({ label: 'Get Refund', action: 'brand_request_refund', style: 'bg-red-500 text-white' });
-                actions.push({ label: 'Work is Complete', action: 'brand_complete_disputed', style: 'bg-green-500 text-white' });
+                actions.push({ label: 'Request Full Refund', action: 'brand_request_refund', style: 'bg-red-500 text-white' });
+                actions.push({ label: 'Approve Payment', action: 'brand_complete_disputed', style: 'bg-green-500 text-white' });
                 break;
         }
         
@@ -200,7 +209,8 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
             case 'in_progress': info = "Work is currently in progress."; break;
             case 'completed': info = `Collaboration complete. Payment status: ${req.paymentStatus || 'pending'}`; break;
             case 'rejected': info = req.rejectionReason ? `Rejected: ${req.rejectionReason}` : `Request Rejected`; break;
-            case 'brand_decision_pending': info = `Admin has ruled in your favor. Please decide if the work can be marked as complete (to pay the creator) or if you want a refund.`; break;
+            case 'brand_decision_pending': info = `Admin has ruled in your favor. Please decide if the work can be marked as complete (to release payment) or if you want a refund.`; break;
+            case 'refund_pending_admin_review': info = 'Your refund request is under review. A BIGYAPON agent will process it within 48 hours.'; break;
         }
         if (!info) return null;
         return <div className="mt-4 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">{info}</div>;
@@ -213,7 +223,7 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
         requests.forEach(req => {
             if(['pending', 'influencer_offer', 'brand_offer', 'agreement_reached'].includes(req.status)) {
                 pending.push(req);
-            } else if (['in_progress', 'work_submitted', 'disputed', 'brand_decision_pending'].includes(req.status)) {
+            } else if (['in_progress', 'work_submitted', 'disputed', 'brand_decision_pending', 'refund_pending_admin_review'].includes(req.status)) {
                 active.push(req);
             } else {
                 archived.push(req);
@@ -264,6 +274,7 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
                         userId: user.id,
                         description: `Payment for collaboration: ${payingRequest.title}`,
                         relatedId: payingRequest.id,
+                        collabId: payingRequest.collabId,
                     }}
                 />
             )}
@@ -274,9 +285,20 @@ const MyCollaborationsPage: React.FC<MyCollaborationsPageProps> = ({ user, platf
                     onClose={() => setDisputingRequest(null)}
                     onDisputeSubmitted={() => {
                         setDisputingRequest(null);
-                        fetchRequests();
                     }}
                 />
+            )}
+            {confirmAction && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+                        <h3 className="text-lg font-bold dark:text-gray-100">Confirm Action</h3>
+                        <p className="text-gray-600 dark:text-gray-300 my-4">Are you sure you want to approve this work? This will mark the collaboration as complete and release the final payment to the influencer.</p>
+                        <div className="flex justify-end space-x-2">
+                            <button onClick={() => setConfirmAction(null)} className="px-4 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-600 dark:text-gray-200">Cancel</button>
+                            <button onClick={executeConfirmAction} className="px-4 py-2 text-sm rounded-md bg-green-600 text-white">Confirm &amp; Approve</button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

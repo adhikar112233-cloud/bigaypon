@@ -2,34 +2,73 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BIGYAPON - Promote Smart. Grow Fast.</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- TailwindCSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-      // Enable class-based dark mode
       tailwind.config = {
         darkMode: 'class',
-      }
+      };
     </script>
-  <script type="importmap">
+    
+    <style>
+      @keyframes fade-in-down {
+        0% {
+          opacity: 0;
+          transform: translateY(-20px);
+        }
+        100% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .animate-fade-in-down {
+        animation: fade-in-down 0.5s ease-out forwards;
+      }
+    </style>
+
+    <!-- Import Map -->
+    <script type="importmap">
 {
   "imports": {
     "react": "https://aistudiocdn.com/react@^19.2.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react/jsx-runtime": "https://aistudiocdn.com/react@^19.2.0/jsx-runtime",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.28.0",
-    "firebase/app": "https://www.gstatic.com/firebasejs/9.15.0/firebase-app.js",
-    "firebase/auth": "https://www.gstatic.com/firebasejs/9.15.0/firebase-auth.js",
-    "firebase/firestore": "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js",
-    "firebase/storage": "https://www.gstatic.com/firebasejs/9.15.0/firebase-storage.js",
-    "firebase/": "https://aistudiocdn.com/firebase@^12.5.0/"
+    "firebase/app": "https://aistudiocdn.com/firebase@^12.5.0/app",
+    "firebase/auth": "https://aistudiocdn.com/firebase@^12.5.0/auth",
+    "firebase/firestore": "https://aistudiocdn.com/firebase@^12.5.0/firestore",
+    "firebase/storage": "https://aistudiocdn.com/firebase@^12.5.0/storage",
+    "firebase/messaging": "https://aistudiocdn.com/firebase@^12.5.0/messaging",
+    "firebase/": "https://aistudiocdn.com/firebase@^12.5.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/"
   }
 }
 </script>
-</head>
-  <body class="bg-gray-50 dark:bg-gray-900">
+  </head>
+
+  <body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
     <div id="root"></div>
+
+    <!-- Main entry script -->
     <script type="module" src="/index.tsx"></script>
+
+    <!-- Service Worker Registration for Firebase Messaging -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/firebase-messaging-sw.js')
+            .then((registration) => {
+              console.log('Service Worker registration successful with scope: ', registration.scope);
+            })
+            .catch((err) => {
+              console.log('Service Worker registration failed: ', err);
+            });
+        });
+      }
+    </script>
   </body>
 </html>

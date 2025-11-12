@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { User, AnyCollaboration, PayoutRequest, PlatformSettings } from '../types';
 import { apiService } from '../services/apiService';
 import CameraCapture from './CameraCapture';
@@ -18,6 +18,14 @@ const PayoutRequestPage: React.FC<PayoutRequestPageProps> = ({ user, collaborati
     const [selfieDataUrl, setSelfieDataUrl] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // FIX: Add useMemo to correctly derive the collaboration title from the union type.
+    const collaborationTitle = useMemo(() => {
+        if ('title' in collaboration) return collaboration.title;
+        if ('campaignTitle' in collaboration) return collaboration.campaignTitle;
+        if ('campaignName' in collaboration) return collaboration.campaignName;
+        return 'Untitled Collaboration';
+    }, [collaboration]);
 
     // --- Calculation Logic ---
     const finalAmountRaw = collaboration?.finalAmount ? parseFloat(String(collaboration.finalAmount).replace(/[^0-9.-]+/g, "")) : 0;
@@ -76,16 +84,15 @@ const PayoutRequestPage: React.FC<PayoutRequestPageProps> = ({ user, collaborati
                 selfieUrl = await apiService.uploadPayoutSelfie(user.id, selfieFile);
             }
             
-            const title = 'title' in collaboration ? collaboration.title : collaboration.campaignName;
-            
             const requestData: any = {
                 userId: user.id,
                 userName: user.name,
                 userAvatar: user.avatar || '',
                 collaborationId: collaboration.id,
                 collaborationType: getCollaborationType(),
-                collaborationTitle: title,
+                collaborationTitle: collaborationTitle,
                 amount: finalPayoutAmount,
+                collabId: collaboration.collabId,
             };
 
             if (selfieUrl) {
@@ -109,8 +116,6 @@ const PayoutRequestPage: React.FC<PayoutRequestPageProps> = ({ user, collaborati
         }
     };
 
-    const collaborationTitle = 'title' in collaboration ? collaboration.title : collaboration.campaignName;
-
     return (
         <div className="max-w-6xl mx-auto">
             <div className="flex items-center justify-between mb-6">
@@ -129,6 +134,7 @@ const PayoutRequestPage: React.FC<PayoutRequestPageProps> = ({ user, collaborati
                         <div className="mt-4 space-y-2 text-sm">
                             <div className="flex justify-between"><span className="text-gray-500">Title:</span> <span className="font-semibold text-right">{collaborationTitle}</span></div>
                             <div className="flex justify-between"><span className="text-gray-500">ID:</span> <span className="font-mono text-xs">{collaboration.id}</span></div>
+                            {collaboration.collabId && <div className="flex justify-between"><span className="text-gray-500">Collab ID:</span> <span className="font-mono text-xs">{collaboration.collabId}</span></div>}
                         </div>
                     </div>
                     {/* Payout Calculation */}

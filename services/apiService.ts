@@ -1,6 +1,6 @@
 // Fix: Import `MembershipPlan` and KYC types to correctly type KYC-related functions.
 // Fix: Import LiveHelpSession and LiveHelpMessage to support live help chat functionality.
-import { Influencer, Message, User, PlatformSettings, Attachment, CollaborationRequest, CollabRequestStatus, Conversation, ConversationParticipant, Campaign, CampaignApplication, LiveTvChannel, AdSlotRequest, BannerAd, BannerAdBookingRequest, SupportTicket, TicketReply, SupportTicketStatus, Membership, UserRole, PayoutRequest, CampaignApplicationStatus, AdBookingStatus, AnyCollaboration, DailyPayoutRequest, Post, Comment, Dispute, MembershipPlan, Transaction, KycDetails, KycStatus, PlatformBanner, PushNotification, Boost, BoostDuration, LiveHelpSession, LiveHelpMessage, RefundRequest } from '../types';
+import { Influencer, Message, User, PlatformSettings, Attachment, CollaborationRequest, CollabRequestStatus, Conversation, ConversationParticipant, Campaign, CampaignApplication, LiveTvChannel, AdSlotRequest, BannerAd, BannerAdBookingRequest, SupportTicket, TicketReply, SupportTicketStatus, Membership, UserRole, PayoutRequest, CampaignApplicationStatus, AdBookingStatus, AnyCollaboration, DailyPayoutRequest, Post, Comment, Dispute, MembershipPlan, Transaction, KycDetails, KycStatus, PlatformBanner, PushNotification, Boost, BoostDuration, LiveHelpSession, LiveHelpMessage, RefundRequest, View } from '../types';
 import { db, storage } from './firebase';
 // Fix: Corrected Firebase import statements to align with Firebase v9 modular syntax.
 import {
@@ -22,11 +22,18 @@ import {
   increment,
   deleteDoc,
   arrayRemove,
-  getCountFromServer
+  getCountFromServer,
+  onSnapshot,
+  limit,
+  startAfter,
+  QueryDocumentSnapshot,
+  DocumentData,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, uploadBytesResumable } from 'firebase/storage';
 
 const DEFAULT_AVATAR_URL = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2NjYyI+PHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNHYyaDRjMCAwIDAtMSAwLTJoMTJ2Mmg0di00YzAtMi42Ni01LjMzLTQtOC00eiIvPjwvc3ZnPg==';
+
+const generateCollabId = (): string => `CRI${String(Math.floor(Math.random() * 10000000000)).padStart(10, '0')}`;
 
 const initialInfluencersData: Omit<Influencer, 'id'>[] = [
   // FIX: Added missing engagementRate property to match the Influencer type.
@@ -60,13 +67,17 @@ const isMembershipActive = (membership: Membership): boolean => {
 
 const getUsersWithActiveMembership = async (role: UserRole): Promise<string[]> => {
     const usersRef = collection(db, 'users');
-    const q = query(usersRef, where('role', '==', role));
+    const q = query(
+        usersRef,
+        where('role', '==', role),
+        where('membership.isActive', '==', true)
+    );
     const snapshot = await getDocs(q);
 
     const activeUserIds: string[] = [];
     snapshot.forEach(doc => {
         const user = doc.data() as User;
-        if (isMembershipActive(user.membership)) {
+        if (user.membership?.expiresAt && (user.membership.expiresAt as Timestamp).toDate() > new Date()) {
             activeUserIds.push(doc.id);
         }
     });
@@ -97,6 +108,26 @@ const getCollectionNameForCollab = (collabType: 'direct' | 'campaign' | 'ad_slot
 };
 
 export const apiService = {
+  sendNotificationToUser: async (userId: string, title: string, body: string, targetUrl?: string): Promise<void> => {
+    // This simulates triggering a backend function to send a notification to a specific user.
+    const userDocRef = doc(db, 'users', userId);
+    const userDoc = await getDoc(userDocRef);
+    if (userDoc.exists()) {
+        const user = userDoc.data() as User;
+        // Only queue notification if user has a token and has enabled notifications (or not explicitly disabled)
+        if (user.fcmToken && user.notificationPreferences?.enabled !== false) {
+            await addDoc(collection(db, 'user_notifications'), {
+                userId,
+                fcmToken: user.fcmToken, // For the backend function to use
+                title,
+                body,
+                targetUrl: targetUrl || null,
+                sentAt: serverTimestamp(),
+                status: 'queued',
+            });
+        }
+    }
+  },
   uploadProfilePicture: (userId: string, file: File): Promise<string> => {
     const storageRef = ref(storage, `profile_pictures/${userId}`);
     const uploadTask = uploadBytesResumable(storageRef, file);
@@ -203,7 +234,7 @@ export const apiService = {
       const batch = writeBatch(db);
       initialInfluencersData.forEach(influencer => {
         const docRef = doc(influencersRef); // Firestore generates ID
-        batch.set(docRef, influencer);
+        batch.set(docRef, {...influencer, isBoosted: false, membershipActive: true });
       });
       await batch.commit();
       console.log("Influencers seeded successfully.");
@@ -254,29 +285,42 @@ export const apiService = {
     }
   },
 
-  getInfluencers: async (settings: PlatformSettings): Promise<Influencer[]> => {
-    if (!settings.areInfluencerProfilesPublic) return [];
-    
-    const influencersCol = collection(db, 'influencers');
-    // Membership is always required for creators to be visible
-    const activeInfluencerIds = await getUsersWithActiveMembership('influencer');
-    if (activeInfluencerIds.length > 0) {
-        // Firestore 'in' queries are limited to 30 items. For a larger scale app, this would need pagination or a different approach.
-        const influencerChunks = [];
-        for (let i = 0; i < activeInfluencerIds.length; i += 30) {
-            influencerChunks.push(activeInfluencerIds.slice(i, i + 30));
-        }
-        
-        const promises = influencerChunks.map(chunk => {
-            const chunkQuery = query(influencersCol, where(documentId(), 'in', chunk));
-            return getDocs(chunkQuery);
-        });
-        
-        const snapshots = await Promise.all(promises);
-        return snapshots.flatMap(snapshot => snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Influencer)));
-    } else {
-        return []; // No active influencers, return empty
-    }
+  getInfluencersPaginated: async (
+    settings: PlatformSettings,
+    options: { limit: number; startAfterDoc?: QueryDocumentSnapshot<DocumentData> }
+  ): Promise<{ influencers: Influencer[]; lastVisible: QueryDocumentSnapshot<DocumentData> | null }> => {
+      if (!settings.areInfluencerProfilesPublic) return { influencers: [], lastVisible: null };
+  
+      const influencersCol = collection(db, 'influencers');
+      
+      // FIX: The original query required a composite index that is missing in the project.
+      // To prevent the app from crashing, the orderBy('isBoosted', 'desc') clause has been removed.
+      // FIX 2: The orderBy('followers', 'desc') also requires an index. It is removed to prevent crashes.
+      // Influencers will appear in a default order. To restore sorting, create the required indexes in Firebase.
+      let q = query(
+          influencersCol, 
+          where('membershipActive', '==', true),
+          // orderBy('isBoosted', 'desc'), // This line requires a composite index.
+          // orderBy('followers', 'desc'), // This line also requires a composite index.
+          limit(options.limit)
+      );
+  
+      if (options.startAfterDoc) {
+          q = query(
+              influencersCol,
+              where('membershipActive', '==', true),
+              // orderBy('isBoosted', 'desc'), // This line requires a composite index.
+              // orderBy('followers', 'desc'), // This line also requires a composite index.
+              startAfter(options.startAfterDoc),
+              limit(options.limit)
+          );
+      }
+      
+      const snapshot = await getDocs(q);
+      const influencers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Influencer));
+      const lastVisible = snapshot.docs[snapshot.docs.length - 1] || null;
+  
+      return { influencers, lastVisible };
   },
   
   // FIX: Implement missing function and correct logic to query channels by ownerId.
@@ -330,7 +374,7 @@ export const apiService = {
         otpApiSourceCode: '',
         isOtpLoginEnabled: true,
         isForgotPasswordOtpEnabled: true,
-        isStaffRegistrationEnabled: false,
+        isStaffRegistrationEnabled: true, // Enabled by default to ensure admin access
         isSocialMediaFabEnabled: true,
         socialMediaLinks: [],
         isDigilockerKycEnabled: true,
@@ -364,13 +408,24 @@ export const apiService = {
           '1y': 15000,
         },
         liveHelpStaffId: '',
+        discountSettings: {
+            creatorProfileBoost: { isEnabled: false, percentage: 0 },
+            brandMembership: { isEnabled: false, percentage: 0 },
+            creatorMembership: { isEnabled: false, percentage: 0 },
+            brandCampaignBoost: { isEnabled: false, percentage: 0 },
+        },
     };
     
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) {
         const existingData = docSnap.data();
         // Merge defaults with existing data to ensure all fields are present
-        return { ...defaultSettings, ...existingData, payoutSettings: { ...defaultSettings.payoutSettings, ...existingData.payoutSettings } } as PlatformSettings;
+        return { 
+            ...defaultSettings, 
+            ...existingData, 
+            payoutSettings: { ...defaultSettings.payoutSettings, ...existingData.payoutSettings },
+            discountSettings: { ...defaultSettings.discountSettings, ...(existingData.discountSettings || {}) }
+        } as PlatformSettings;
     } else {
         // If the document doesn't exist, create it with the full default settings
         await setDoc(docRef, defaultSettings);
@@ -380,7 +435,7 @@ export const apiService = {
 
   updatePlatformSettings: async (settings: PlatformSettings): Promise<void> => {
     const docRef = doc(db, 'settings', 'platform');
-    await setDoc(docRef, settings);
+    await setDoc(docRef, settings, { merge: true });
   },
 
   // Users
@@ -388,6 +443,18 @@ export const apiService = {
     const usersCol = collection(db, 'users');
     const snapshot = await getDocs(usersCol);
     return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
+  },
+
+  getUsersPaginated: async (options: { pageLimit: number; startAfterDoc?: QueryDocumentSnapshot<DocumentData> }): Promise<{ users: User[]; lastVisible: QueryDocumentSnapshot<DocumentData> | null }> => {
+    const usersCol = collection(db, 'users');
+    let q = query(usersCol, orderBy('name'), limit(options.pageLimit));
+    if (options.startAfterDoc) {
+        q = query(usersCol, orderBy('name'), startAfter(options.startAfterDoc), limit(options.pageLimit));
+    }
+    const snapshot = await getDocs(q);
+    const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
+    const lastVisible = snapshot.docs[snapshot.docs.length - 1] || null;
+    return { users, lastVisible };
   },
 
   getUserByEmail: async (email: string): Promise<User | null> => {
@@ -448,6 +515,29 @@ export const apiService = {
     return messages.map(msg => ({ ...msg, timestamp: formatMessageTimestamp(msg.timestamp) }));
   },
 
+  getMessagesListener: (
+    userId1: string,
+    userId2: string,
+    callback: (messages: Message[]) => void,
+    onError: (error: Error) => void
+  ): (() => void) => { // Returns an unsubscribe function
+    const participantIds = [userId1, userId2].sort();
+    const q = query(
+      collection(db, 'messages'),
+      where('participantIds', '==', participantIds),
+      orderBy('timestamp', 'asc')
+    );
+  
+    return onSnapshot(q, (snapshot) => {
+      const messages = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        timestamp: formatMessageTimestamp(doc.data().timestamp as Timestamp),
+      })) as Message[];
+      callback(messages);
+    }, onError);
+  },
+
   sendMessage: async (text: string, senderId: string, receiverId: string, attachments: Attachment[]): Promise<Message> => {
     const participantIds = [senderId, receiverId].sort();
     const docRef = await addDoc(collection(db, 'messages'), {
@@ -469,46 +559,69 @@ export const apiService = {
     };
   },
   
-    getConversations: async (userId: string, allUsers: User[], allInfluencers: Influencer[]): Promise<Conversation[]> => {
-        const messagesRef = collection(db, 'messages');
-        const q = query(messagesRef, where('participantIds', 'array-contains', userId));
-        const snapshot = await getDocs(q);
+  getConversations: async (userId: string): Promise<Conversation[]> => {
+    const messagesRef = collection(db, 'messages');
+    const q = query(messagesRef, where('participantIds', 'array-contains', userId));
+    const snapshot = await getDocs(q);
+    
+    const messagesByParticipant: { [key: string]: Message } = {};
+    snapshot.docs.forEach(doc => {
+        const msg = {id: doc.id, ...doc.data()} as Message;
+        const otherId = msg.senderId === userId ? msg.receiverId : msg.senderId;
+        if (!messagesByParticipant[otherId] || (msg.timestamp as Timestamp) > (messagesByParticipant[otherId].timestamp as Timestamp)) {
+            messagesByParticipant[otherId] = msg;
+        }
+    });
+
+    const participantIds = Object.keys(messagesByParticipant);
+    if (participantIds.length === 0) return [];
+    
+    const profilePromises = participantIds.map(async (id) => {
+        const userDocRef = doc(db, 'users', id);
+        const userDoc = await getDoc(userDocRef);
+        if (userDoc.exists()) {
+            return { id: userDoc.id, ...userDoc.data() } as User;
+        }
         
-        const messages = snapshot.docs.map(doc => doc.data() as Message);
-        messages.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+        const influencerDocRef = doc(db, 'influencers', id);
+        const influencerDoc = await getDoc(influencerDocRef);
+        if (influencerDoc.exists()) {
+            return { id: influencerDoc.id, ...influencerDoc.data(), role: 'influencer' } as Influencer & { role: 'influencer' };
+        }
+        return null;
+    });
 
-        const conversations: { [key: string]: Conversation } = {};
-        const allProfiles: (User | Influencer)[] = [...allUsers, ...allInfluencers];
-        
-        messages.forEach(message => {
-            const otherParticipantId = message.senderId === userId ? message.receiverId : message.senderId;
+    const profiles = (await Promise.all(profilePromises)).filter(Boolean) as (User | Influencer)[];
+    const profileMap = new Map(profiles.map(p => [p.id, p]));
+    
+    const conversations = Object.entries(messagesByParticipant)
+        .map(([otherId, lastMessage]) => {
+            const participantProfile = profileMap.get(otherId);
+            if (!participantProfile) return null;
 
-            if (!conversations[otherParticipantId]) {
-                const participantProfile = allProfiles.find(p => p.id === otherParticipantId);
-                
-                if (participantProfile) {
-                     const participant: ConversationParticipant = {
-                        id: participantProfile.id,
-                        name: participantProfile.name,
-                        avatar: participantProfile.avatar || DEFAULT_AVATAR_URL,
-                        role: 'role' in participantProfile ? participantProfile.role : 'influencer',
-                        handle: 'handle' in participantProfile ? participantProfile.handle : undefined,
-                        companyName: 'companyName' in participantProfile ? participantProfile.companyName : undefined,
-                    };
+            const participant: ConversationParticipant = {
+                id: participantProfile.id,
+                name: participantProfile.name,
+                avatar: participantProfile.avatar || DEFAULT_AVATAR_URL,
+                role: 'role' in participantProfile ? participantProfile.role : 'influencer',
+                handle: 'handle' in participantProfile ? participantProfile.handle : undefined,
+                companyName: 'companyName' in participantProfile ? participantProfile.companyName : undefined,
+            };
 
-                    conversations[otherParticipantId] = {
-                        id: otherParticipantId,
-                        participant: participant,
-                        lastMessage: {
-                            text: message.text,
-                            timestamp: message.timestamp,
-                        },
-                    };
-                }
-            }
-        });
+            return {
+                id: otherId,
+                participant: participant,
+                lastMessage: {
+                    text: lastMessage.text,
+                    timestamp: lastMessage.timestamp,
+                },
+            };
+        })
+        .filter((c): c is Conversation => c !== null);
+    
+    conversations.sort((a, b) => ((b.lastMessage.timestamp as Timestamp)?.toMillis() || 0) - ((a.lastMessage.timestamp as Timestamp)?.toMillis() || 0));
 
-        return Object.values(conversations);
+    return conversations;
   },
 
   // Collaboration Requests
@@ -523,6 +636,7 @@ export const apiService = {
     
     await addDoc(collection(db, 'collaboration_requests'), {
       ...requestData,
+      collabId: generateCollabId(),
       status: 'pending',
       timestamp: serverTimestamp(),
     });
@@ -540,6 +654,24 @@ export const apiService = {
     requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
     return requests;
   },
+
+  getCollabRequestsForBrandListener: (
+    brandId: string,
+    callback: (requests: CollaborationRequest[]) => void,
+    onError: (error: Error) => void
+  ): (() => void) => {
+    // FIX: Removed orderBy to prevent Firestore index error. Sorting is now handled client-side.
+    const q = query(
+      collection(db, 'collaboration_requests'),
+      where('brandId', '==', brandId)
+    );
+    return onSnapshot(q, (snapshot) => {
+      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CollaborationRequest));
+      // Client-side sorting by timestamp descending.
+      requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+      callback(requests);
+    }, onError);
+  },
   
   getCollabRequestsForInfluencer: async (influencerId: string): Promise<CollaborationRequest[]> => {
     const q = query(collection(db, 'collaboration_requests'), where('influencerId', '==', influencerId));
@@ -549,7 +681,25 @@ export const apiService = {
     return requests;
   },
 
-  updateCollaborationRequest: async (reqId: string, data: Partial<CollaborationRequest>): Promise<void> => {
+  getCollabRequestsForInfluencerListener: (
+    influencerId: string,
+    callback: (requests: CollaborationRequest[]) => void,
+    onError: (error: Error) => void
+  ): (() => void) => {
+    // FIX: Removed orderBy to prevent Firestore index error. Sorting is now handled client-side.
+    const q = query(
+      collection(db, 'collaboration_requests'),
+      where('influencerId', '==', influencerId)
+    );
+    return onSnapshot(q, (snapshot) => {
+      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CollaborationRequest));
+      // Client-side sorting by timestamp descending.
+      requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+      callback(requests);
+    }, onError);
+  },
+
+  updateCollaborationRequest: async (reqId: string, data: Partial<CollaborationRequest>, actorId: string): Promise<void> => {
     const docRef = doc(db, 'collaboration_requests', reqId);
     const updateData: any = {...data};
 
@@ -559,18 +709,43 @@ export const apiService = {
         if (docSnap.exists()) {
             const oldRequest = docSnap.data() as CollaborationRequest;
             if (oldRequest.currentOffer) {
-                // The new history entry is the PREVIOUS current offer.
-                const historyEntry = {
-                    ...oldRequest.currentOffer,
-                    timestamp: Timestamp.now() // Timestamp when it became history.
-                };
-                // Use arrayUnion to add it to the history.
+                const historyEntry = { ...oldRequest.currentOffer, timestamp: Timestamp.now() };
                 updateData.offerHistory = arrayUnion(historyEntry);
             }
         }
     }
 
     await updateDoc(docRef, updateData);
+    
+    // --- New Notification Logic ---
+    if (data.status) {
+        const collabDoc = await getDoc(docRef);
+        if (!collabDoc.exists()) return;
+        const collab = collabDoc.data() as CollaborationRequest;
+        
+        const isActorBrand = actorId === collab.brandId;
+        const recipientId = isActorBrand ? collab.influencerId : collab.brandId;
+        const actorName = isActorBrand ? collab.brandName : collab.influencerName;
+
+        let title = '';
+        let body = '';
+        let targetView: View = isActorBrand ? View.COLLAB_REQUESTS : View.MY_COLLABORATIONS;
+
+        switch (data.status) {
+            case 'brand_offer': title = `New Offer for "${collab.title}"`; body = `${actorName} has sent you a counter-offer.`; break;
+            case 'influencer_offer': title = `New Offer for "${collab.title}"`; body = `${actorName} has sent you an offer.`; break;
+            case 'agreement_reached': title = `Agreement Reached for "${collab.title}"!`; body = `Payment is now pending from the brand.`; break;
+            case 'in_progress': if (data.paymentStatus === 'paid') { title = `Payment Confirmed for "${collab.title}"`; body = `${actorName} has completed the payment. You can now start the work.`; } break;
+            case 'work_submitted': title = `Work Submitted for "${collab.title}"`; body = `${actorName} has submitted their work for your review.`; break;
+            case 'completed': title = `Collaboration Completed!`; body = `${actorName} has marked "${collab.title}" as complete.`; break;
+            case 'rejected': title = `Update on "${collab.title}"`; body = `Your collaboration request with ${actorName} has been rejected.`; break;
+            case 'disputed': title = `Dispute Raised for "${collab.title}"`; body = `A dispute has been raised by ${actorName}. An admin will review it shortly.`; break;
+        }
+
+        if (title && body) {
+            await apiService.sendNotificationToUser(recipientId, title, body);
+        }
+    }
   },
   
   // Marketing / Banners
@@ -615,6 +790,16 @@ export const apiService = {
   },
 
   // Push Notifications
+  saveFcmToken: async (userId: string, token: string | null): Promise<void> => {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, { fcmToken: token });
+  },
+
+  updateNotificationPreferences: async (userId: string, preferences: { enabled: boolean }): Promise<void> => {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, { notificationPreferences: preferences });
+  },
+
   getSubscribedUserCount: async (): Promise<number> => {
       const tokensRef = collection(db, 'fcm_tokens');
       const snapshot = await getCountFromServer(tokensRef);
@@ -628,6 +813,18 @@ export const apiService = {
         title,
         body,
         targetUrl: targetUrl || null,
+        sentAt: serverTimestamp(),
+        status: 'queued', // A backend function would pick this up
+    });
+  },
+
+  sendBulkEmail: async (targetRole: UserRole, subject: string, body: string): Promise<void> => {
+    // In a real app, this would trigger a backend function.
+    // For this simulation, we'll just log it to a Firestore collection.
+    await addDoc(collection(db, 'sent_emails'), {
+        targetRole,
+        subject,
+        body,
         sentAt: serverTimestamp(),
         status: 'queued', // A backend function would pick this up
     });
@@ -838,256 +1035,86 @@ export const apiService = {
     }
   },
 
-  // Payouts
-  submitPayoutRequest: async (data: Omit<PayoutRequest, 'id' | 'timestamp' | 'status'>): Promise<void> => {
-      await addDoc(collection(db, 'payout_requests'), {
-          ...data,
-          status: 'pending',
-          timestamp: serverTimestamp(),
-      });
-      // Also update the original collaboration to show payout has been requested
-      const collectionName = getCollectionNameForCollab(data.collaborationType);
-      const collabRef = doc(db, collectionName, data.collaborationId);
-      await updateDoc(collabRef, { paymentStatus: 'payout_requested' });
-  },
+  // START of added functions
   
-  updatePayoutRequest: async (payoutId: string, data: Partial<PayoutRequest>): Promise<void> => {
-    const payoutRef = doc(db, 'payout_requests', payoutId);
-    await updateDoc(payoutRef, data);
-  },
-
-  getPayoutRequests: async (): Promise<PayoutRequest[]> => {
-    const q = query(collection(db, 'payout_requests'));
+  getAllTransactions: async (): Promise<Transaction[]> => {
+    const q = query(collection(db, 'transactions'), orderBy('timestamp', 'desc'));
     const snapshot = await getDocs(q);
-    const allPayouts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PayoutRequest));
-    const pendingPayouts = allPayouts.filter(p => p.status === 'pending');
-    // Sort client-side
-    pendingPayouts.sort((a, b) => ((a.timestamp as Timestamp)?.toMillis() || 0) - ((b.timestamp as Timestamp)?.toMillis() || 0));
-    return pendingPayouts;
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
   },
 
   getAllPayouts: async (): Promise<PayoutRequest[]> => {
-      const q = query(collection(db, 'payout_requests'), orderBy('timestamp', 'desc'));
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PayoutRequest));
-  },
-  
-  getPayoutHistoryForUser: async (userId: string): Promise<PayoutRequest[]> => {
-      const q = query(collection(db, 'payout_requests'), where('userId', '==', userId));
-      const snapshot = await getDocs(q);
-      const payouts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PayoutRequest));
-      payouts.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-      return payouts;
-  },
-  
-  updatePayoutStatus: async (payoutId: string, status: PayoutRequest['status'], collabId: string, collabType: PayoutRequest['collaborationType'], reason?: string): Promise<void> => {
-      const payoutRef = doc(db, 'payout_requests', payoutId);
-      
-      const batch = writeBatch(db);
-      
-      const updateData: {status: PayoutRequest['status'], rejectionReason?: string} = { status };
-      if (reason) updateData.rejectionReason = reason;
-      
-      batch.update(payoutRef, updateData);
-
-      // Update the original collaboration as well
-      const collectionName = getCollectionNameForCollab(collabType);
-      const collabRef = doc(db, collectionName, collabId);
-      const collabDoc = await getDoc(collabRef);
-
-      let paymentStatusUpdate: AnyCollaboration['paymentStatus'] | undefined;
-      if (status === 'approved') {
-          paymentStatusUpdate = 'payout_complete';
-      } else if (status === 'rejected') {
-          // Revert to 'paid' so the user can try again
-          paymentStatusUpdate = 'paid';
-      }
-
-      if (paymentStatusUpdate && collabDoc.exists()) {
-          batch.update(collabRef, { paymentStatus: paymentStatusUpdate });
-      }
-      
-      await batch.commit();
-  },
-
-  submitDailyPayoutRequest: async (data: Omit<DailyPayoutRequest, 'id' | 'timestamp' | 'status'>): Promise<void> => {
-    await addDoc(collection(db, 'daily_payout_requests'), {
-      ...data,
-      status: 'pending',
-      timestamp: serverTimestamp(),
-    });
-  },
-
-  getDailyPayoutRequests: async (): Promise<DailyPayoutRequest[]> => {
-      const q = query(collection(db, 'daily_payout_requests'), where('status', '==', 'pending'));
-      const snapshot = await getDocs(q);
-      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as DailyPayoutRequest));
-      requests.sort((a, b) => ((a.timestamp as Timestamp)?.toMillis() || 0) - ((b.timestamp as Timestamp)?.toMillis() || 0));
-      return requests;
-  },
-  
-  getAllDailyPayoutRequests: async (): Promise<DailyPayoutRequest[]> => {
-    const q = query(collection(db, 'daily_payout_requests'), orderBy('timestamp', 'desc'));
+    const q = query(collection(db, 'payout_requests'), orderBy('timestamp', 'desc'));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as DailyPayoutRequest));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PayoutRequest));
   },
 
-  updateDailyPayoutRequest: async (reqId: string, data: Partial<DailyPayoutRequest>): Promise<void> => {
-      const reqRef = doc(db, 'daily_payout_requests', reqId);
-      await updateDoc(reqRef, data);
-  },
-
-  updateDailyPayoutRequestStatus: async (reqId: string, collabId: string, collabType: 'ad_slot' | 'banner_booking', status: 'approved' | 'rejected', amount?: number, reason?: string): Promise<void> => {
-      const reqRef = doc(db, 'daily_payout_requests', reqId);
-      
-      const collectionName = getCollectionNameForCollab(collabType);
-      const collabRef = doc(db, collectionName, collabId);
-      const collabDoc = await getDoc(collabRef);
-
-      const batch = writeBatch(db);
-
-      const updateData: any = { status };
-      if (status === 'approved' && amount) {
-          updateData.approvedAmount = amount;
-          if (collabDoc.exists()) {
-              batch.update(collabRef, { dailyPayoutsReceived: increment(amount) });
-          }
-      }
-      if (status === 'rejected') {
-          updateData.rejectionReason = reason || "";
-      }
-
-      batch.update(reqRef, updateData);
-      await batch.commit();
-  },
-  
-  // FIX: This is one of the functions causing the error. It assumes the Live TV user's ID is the same as the channel ID.
-  // It should find the user's channel(s) first, then find the ad requests for those channel IDs.
-  getActiveAdCollabsForAgency: async (userId: string, role: 'livetv' | 'banneragency'): Promise<(AdSlotRequest | BannerAdBookingRequest)[]> => {
-    if (role === 'banneragency') {
-        const q = query(collection(db, 'banner_booking_requests'), where('agencyId', '==', userId), where('status', '==', 'in_progress'));
-        const snapshot = await getDocs(q);
-        return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
-    }
-
-    if (role === 'livetv') {
-        // Step 1: Find all channels owned by the user.
-        const channelsQuery = query(collection(db, 'livetv_channels'), where('ownerId', '==', userId));
-        const channelsSnapshot = await getDocs(channelsQuery);
-        const channelIds = channelsSnapshot.docs.map(doc => doc.id);
-
-        if (channelIds.length === 0) {
-            return []; // No channels, no ad requests.
-        }
-
-        // Step 2 & 3: Find 'in_progress' ad requests for those channels.
-        // Firestore 'in' queries are limited to 30 items. Handle chunking.
-        const adRequests: AdSlotRequest[] = [];
-        const idChunks: string[][] = [];
-        for (let i = 0; i < channelIds.length; i += 30) {
-            idChunks.push(channelIds.slice(i, i + 30));
-        }
-
-        for (const chunk of idChunks) {
-            const requestsQuery = query(
-                collection(db, 'ad_slot_requests'), 
-                where('liveTvId', 'in', chunk), 
-                where('status', '==', 'in_progress')
-            );
-            const requestsSnapshot = await getDocs(requestsQuery);
-            requestsSnapshot.forEach(doc => {
-                adRequests.push({ id: doc.id, ...doc.data() } as AdSlotRequest);
-            });
-        }
-        return adRequests;
-    }
-
-    return []; // Should not happen given the role type.
-  },
-
-  // Transactions
-  createTransaction: async (data: Omit<Transaction, 'id' | 'timestamp'>): Promise<void> => {
-      await addDoc(collection(db, 'transactions'), {
-          ...data,
-          timestamp: serverTimestamp(),
-      });
-  },
-  
-  getTransactionsForUser: async (userId: string): Promise<Transaction[]> => {
-      const q = query(collection(db, 'transactions'), where('userId', '==', userId));
-      const snapshot = await getDocs(q);
-      const transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-      transactions.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-      return transactions;
-  },
-
-  getAllTransactions: async (): Promise<Transaction[]> => {
-      const q = query(collection(db, 'transactions'), orderBy('timestamp', 'desc'));
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
-  },
-  
-  // Refunds
-  createRefundRequest: async (data: Omit<RefundRequest, 'id' | 'timestamp' | 'status'>): Promise<void> => {
-    const collectionName = getCollectionNameForCollab(data.collabType);
-    const collabRef = doc(db, collectionName, data.collabId);
-    const collabDoc = await getDoc(collabRef);
-
-    const batch = writeBatch(db);
-
-    batch.set(doc(collection(db, 'refund_requests')), {
-      ...data,
-      status: 'pending',
-      timestamp: serverTimestamp(),
-    });
-
-    if (collabDoc.exists()) {
-        batch.update(collabRef, { status: 'rejected', rejectionReason: 'Refund requested by brand.' });
-    }
-
-    await batch.commit();
-  },
-
-  getRefundRequests: async (): Promise<RefundRequest[]> => {
-    const q = query(collection(db, 'refund_requests'), where('status', '==', 'pending'));
+  getOrCreateLiveHelpSession: async (userId: string, userName: string, userAvatar: string, staffId: string): Promise<string> => {
+    const sessionsRef = collection(db, 'live_help_sessions');
+    const q = query(sessionsRef, where('userId', '==', userId), where('status', '==', 'open'));
     const snapshot = await getDocs(q);
-    const allRefunds = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RefundRequest));
-    allRefunds.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-    return allRefunds;
+    if (!snapshot.empty) {
+        return snapshot.docs[0].id;
+    }
+    const newSessionRef = await addDoc(sessionsRef, {
+        userId,
+        userName,
+        userAvatar,
+        assignedStaffId: staffId,
+        status: 'open',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        userHasUnread: false,
+        staffHasUnread: true,
+    });
+    return newSessionRef.id;
   },
 
-  getAllRefundRequests: async (): Promise<RefundRequest[]> => {
-    const q = query(collection(db, 'refund_requests'), orderBy('timestamp', 'desc'));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RefundRequest));
-  },
+  submitKyc: async (userId: string, details: KycDetails, idProofFile: File | null, selfieFile: File | null): Promise<void> => {
+    const userRef = doc(db, 'users', userId);
+    
+    // Using dot notation for updates is safer as it doesn't overwrite the whole object.
+    const updateData: { [key: string]: any } = {
+        kycStatus: 'pending',
+    };
 
-  updateRefundRequest: async (refundId: string, data: Partial<RefundRequest>): Promise<void> => {
-      const refundRef = doc(db, 'refund_requests', refundId);
-      await updateDoc(refundRef, data);
-  },
-  
-  // Fix: Add all missing functions
-  // Campaigns
-  createCampaign: async (data: Omit<Campaign, 'id' | 'status' | 'timestamp'>): Promise<void> => {
-    const userDocRef = doc(db, 'users', data.brandId);
-    const userDoc = await getDoc(userDocRef);
-    const user = userDoc.data() as User;
+    // Add all form details to the update object
+    Object.entries(details).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) { // Firestore cannot store `undefined`
+            updateData[`kycDetails.${key}`] = value;
+        }
+    });
 
-    if (user.membership.plan === 'free' && user.membership.usage.campaigns >= 1) {
-        throw new Error("You have reached your campaign limit on the free plan. Please upgrade to Pro.");
+    if (idProofFile) {
+        const idProofUrl = await apiService.uploadKycFile(userId, idProofFile, 'id_proof');
+        updateData['kycDetails.idProofUrl'] = idProofUrl;
+    }
+    if (selfieFile) {
+        const selfieUrl = await apiService.uploadKycFile(userId, selfieFile, 'selfie');
+        updateData['kycDetails.selfieUrl'] = selfieUrl;
     }
 
-    await addDoc(collection(db, 'campaigns'), {
-      ...data,
-      status: 'open',
-      timestamp: serverTimestamp(),
-      applicantIds: [],
-    });
+    await updateDoc(userRef, updateData);
+  },
 
-    await updateDoc(userDocRef, {
-        'membership.usage.campaigns': increment(1)
-    });
+  submitDigilockerKyc: async (userId: string): Promise<void> => {
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, { kycStatus: 'approved' });
+  },
+
+  getKycSubmissions: async (): Promise<User[]> => {
+    const q = query(collection(db, 'users'), where('kycStatus', '==', 'pending'));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
+  },
+
+  updateKycStatus: async (userId: string, status: KycStatus, reason?: string): Promise<void> => {
+    const userRef = doc(db, 'users', userId);
+    const updateData: any = { kycStatus: status };
+    if (status === 'rejected' && reason) {
+        updateData['kycDetails.rejectionReason'] = reason;
+    }
+    await updateDoc(userRef, updateData);
   },
 
   getCampaignsForBrand: async (brandId: string): Promise<Campaign[]> => {
@@ -1097,88 +1124,13 @@ export const apiService = {
     campaigns.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
     return campaigns;
   },
-
+  
   getApplicationsForCampaign: async (campaignId: string): Promise<CampaignApplication[]> => {
     const q = query(collection(db, 'campaign_applications'), where('campaignId', '==', campaignId));
     const snapshot = await getDocs(q);
-    const apps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CampaignApplication));
-    apps.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-    return apps;
-  },
-
-  getAllOpenCampaigns: async (userLocation?: string): Promise<Campaign[]> => {
-    const activeBrandIds = await getUsersWithActiveMembership('brand');
-    if (activeBrandIds.length === 0) return [];
-    
-    const brandIdChunks: string[][] = [];
-    for (let i = 0; i < activeBrandIds.length; i += 30) {
-        brandIdChunks.push(activeBrandIds.slice(i, i + 30));
-    }
-    
-    let allCampaigns: Campaign[] = [];
-
-    for (const chunk of brandIdChunks) {
-        const q = query(collection(db, 'campaigns'), where('status', '==', 'open'), where('brandId', 'in', chunk));
-        const snapshot = await getDocs(q);
-        const campaignsFromChunk = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Campaign));
-        allCampaigns = [...allCampaigns, ...campaignsFromChunk];
-    }
-    
-    allCampaigns.sort((a, b) => (b.isBoosted ? 1 : 0) - (a.isBoosted ? 1 : 0) || ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-
-    if (userLocation && userLocation !== 'All') {
-        return allCampaigns.filter(c => !c.location || c.location === 'All' || c.location === userLocation);
-    }
-    return allCampaigns;
-  },
-
-  applyToCampaign: async (data: Omit<CampaignApplication, 'id' | 'status' | 'timestamp'>): Promise<void> => {
-    const campaignRef = doc(db, 'campaigns', data.campaignId);
-    
-    const batch = writeBatch(db);
-
-    const appRef = doc(collection(db, 'campaign_applications'));
-    batch.set(appRef, {
-        ...data,
-        status: 'pending_brand_review',
-        timestamp: serverTimestamp(),
-    });
-
-    batch.update(campaignRef, {
-        applicantIds: arrayUnion(data.influencerId),
-    });
-
-    await batch.commit();
-  },
-
-  updateCampaignApplication: async (appId: string, data: Partial<CampaignApplication>): Promise<void> => {
-    const docRef = doc(db, 'campaign_applications', appId);
-    const updateData: any = { ...data };
-
-    // If a new offer is being made, move the old one to the history.
-    if (data.currentOffer) {
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-            const oldApp = docSnap.data() as CampaignApplication;
-            if (oldApp.currentOffer) {
-                // The new history entry is the PREVIOUS current offer.
-                const historyEntry = {
-                    ...oldApp.currentOffer,
-                    timestamp: Timestamp.now() // Timestamp when it became history.
-                };
-                // Use arrayUnion to add it to the history.
-                updateData.offerHistory = arrayUnion(historyEntry);
-            }
-        }
-    }
-    await updateDoc(docRef, updateData);
-  },
-
-  getAllCampaignApplications: async (): Promise<CampaignApplication[]> => {
-    const snapshot = await getDocs(collection(db, 'campaign_applications'));
     return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CampaignApplication));
   },
-
+  
   getCampaignApplicationsForInfluencer: async (influencerId: string): Promise<CampaignApplication[]> => {
     const q = query(collection(db, 'campaign_applications'), where('influencerId', '==', influencerId));
     const snapshot = await getDocs(q);
@@ -1187,243 +1139,381 @@ export const apiService = {
     return apps;
   },
   
-  // Ad Slots (Live TV)
-  sendAdSlotRequest: async (data: Omit<AdSlotRequest, 'id'|'status'|'timestamp'>): Promise<void> => {
-    const userDocRef = doc(db, 'users', data.brandId);
-    const userDoc = await getDoc(userDocRef);
-    const user = userDoc.data() as User;
-    if (user.membership.plan === 'free' && user.membership.usage.liveTvBookings >= 1) {
-        throw new Error("You have reached your Live TV booking limit on the free plan. Please upgrade to Pro.");
-    }
-    await addDoc(collection(db, 'ad_slot_requests'), {
-        ...data,
-        status: 'pending_approval',
-        timestamp: serverTimestamp(),
-    });
-    await updateDoc(userDocRef, { 'membership.usage.liveTvBookings': increment(1) });
-  },
-
-  // FIX: This is the second function causing the error. The 'liveTvUserId' is the owner's ID, not the channel's ID.
-  // The logic needs to first find the user's channels, then query for requests on those channels.
-  getAdSlotRequestsForLiveTv: async (liveTvOwnerId: string): Promise<AdSlotRequest[]> => {
-    // Step 1: Find channels owned by the user.
-    const channelsQuery = query(collection(db, 'livetv_channels'), where('ownerId', '==', liveTvOwnerId));
-    const channelsSnapshot = await getDocs(channelsQuery);
-    const channelIds = channelsSnapshot.docs.map(doc => doc.id);
-
-    if (channelIds.length === 0) {
-        return [];
-    }
-
-    // Step 2: Find all ad requests for those channels. Use an 'in' query.
-    // Handle chunking for 'in' query limit.
-    const allRequests: AdSlotRequest[] = [];
-    const idChunks: string[][] = [];
-    for (let i = 0; i < channelIds.length; i += 30) {
-        idChunks.push(channelIds.slice(i, i + 30));
-    }
-
-    for (const chunk of idChunks) {
-        const requestsQuery = query(collection(db, 'ad_slot_requests'), where('liveTvId', 'in', chunk));
-        const requestsSnapshot = await getDocs(requestsQuery);
-        requestsSnapshot.forEach(doc => {
-            allRequests.push({ id: doc.id, ...doc.data() } as AdSlotRequest);
-        });
-    }
-
-    allRequests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-    return allRequests;
-  },
-
-  updateAdSlotRequest: async (reqId: string, data: Partial<AdSlotRequest>): Promise<void> => {
-      const docRef = doc(db, 'ad_slot_requests', reqId);
-      await updateDoc(docRef, data);
-  },
-  
-  getAdSlotRequestsForBrand: async (brandId: string): Promise<AdSlotRequest[]> => {
-    const q = query(collection(db, 'ad_slot_requests'), where('brandId', '==', brandId));
+  getAdSlotRequestsForLiveTv: async (ownerId: string): Promise<AdSlotRequest[]> => {
+    // Find channel ID first, assuming it's the same as the ownerId
+    const q = query(collection(db, 'ad_slot_requests'), where('liveTvId', '==', ownerId));
     const snapshot = await getDocs(q);
     const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AdSlotRequest));
     requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
     return requests;
   },
 
+  getBannerAdBookingRequestsForAgency: async (agencyId: string): Promise<BannerAdBookingRequest[]> => {
+    const q = query(collection(db, 'banner_booking_requests'), where('agencyId', '==', agencyId));
+    const snapshot = await getDocs(q);
+    const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
+    requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+    return requests;
+  },
+
+  getPosts: async (userId?: string): Promise<Post[]> => {
+    const postsRef = collection(db, 'posts');
+    
+    // Fetch public posts without ordering to avoid index requirement on (visibility, isBlocked, timestamp)
+    const publicQuery = query(postsRef, where('visibility', '==', 'public'));
+    const publicSnap = await getDocs(publicQuery);
+    
+    let allPosts = publicSnap.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Post))
+        .filter(p => p.isBlocked !== true); // Filter blocked posts client-side
+    
+    if (userId) {
+        // Fetch private posts for user
+        const privateQuery = query(postsRef, where('visibility', '==', 'private'), where('userId', '==', userId));
+        const privateSnap = await getDocs(privateQuery);
+        const privatePosts = privateSnap.docs
+            .map(doc => ({ id: doc.id, ...doc.data() } as Post))
+            .filter(p => p.isBlocked !== true);
+            
+        allPosts = [...allPosts, ...privatePosts];
+    }
+
+    // Sort by timestamp descending client-side
+    return allPosts.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+  },
+
+  deletePost: async (postId: string): Promise<void> => {
+    await deleteDoc(doc(db, 'posts', postId));
+  },
+  
+  updatePost: async (postId: string, data: Partial<Post>): Promise<void> => {
+    await updateDoc(doc(db, 'posts', postId), data);
+  },
+
+  getAllCollaborationRequests: async (): Promise<CollaborationRequest[]> => {
+    const snapshot = await getDocs(collection(db, 'collaboration_requests'));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CollaborationRequest));
+  },
+  
+  getAllCampaignApplications: async (): Promise<CampaignApplication[]> => {
+    const snapshot = await getDocs(collection(db, 'campaign_applications'));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CampaignApplication));
+  },
+  
   getAllAdSlotRequests: async (): Promise<AdSlotRequest[]> => {
-      const snapshot = await getDocs(collection(db, 'ad_slot_requests'));
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AdSlotRequest));
+    const snapshot = await getDocs(collection(db, 'ad_slot_requests'));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AdSlotRequest));
+  },
+  
+  getAllBannerAdBookingRequests: async (): Promise<BannerAdBookingRequest[]> => {
+    const snapshot = await getDocs(collection(db, 'banner_booking_requests'));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
   },
 
-
-  // Banner Ads
-  createBannerAd: async (data: Omit<BannerAd, 'id'|'timestamp'>): Promise<void> => {
-      await addDoc(collection(db, 'banner_ads'), {
-          ...data,
-          timestamp: serverTimestamp(),
-      });
+  getAllRefundRequests: async (): Promise<RefundRequest[]> => {
+    const snapshot = await getDocs(collection(db, 'refund_requests'));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as RefundRequest));
+  },
+  
+  getAllDailyPayoutRequests: async (): Promise<DailyPayoutRequest[]> => {
+    const snapshot = await getDocs(collection(db, 'daily_payout_requests'));
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as DailyPayoutRequest));
   },
 
-  getBannerAds: async (cityQuery: string, settings: PlatformSettings): Promise<BannerAd[]> => {
-    const activeAgencyIds = await getUsersWithActiveMembership('banneragency');
-    if (activeAgencyIds.length === 0) return [];
+  createCampaign: async (campaignData: Omit<Campaign, 'id' | 'status' | 'timestamp' | 'applicantIds'>): Promise<void> => {
+    const userDocRef = doc(db, 'users', campaignData.brandId);
+    const userDoc = await getDoc(userDocRef);
+    const user = userDoc.data() as User;
 
-    let allAds: BannerAd[] = [];
-    const agencyIdChunks: string[][] = [];
-    for (let i = 0; i < activeAgencyIds.length; i += 30) {
-        agencyIdChunks.push(activeAgencyIds.slice(i, i + 30));
+    if (user.membership.plan === 'free' && user.membership.usage.campaigns >= 1) {
+        throw new Error("You have reached your campaign limit on the free plan. Please upgrade to Pro.");
     }
 
-    for (const chunk of agencyIdChunks) {
-        let q = query(collection(db, 'banner_ads'), where('agencyId', 'in', chunk));
-        if (cityQuery) {
-            q = query(q, where('location', '==', cityQuery));
+    await addDoc(collection(db, 'campaigns'), {
+        ...campaignData,
+        status: 'open',
+        timestamp: serverTimestamp(),
+        applicantIds: [],
+    });
+    
+    await updateDoc(userDocRef, { 'membership.usage.campaigns': increment(1) });
+  },
+
+  getAllOpenCampaigns: async (userLocation?: string): Promise<Campaign[]> => {
+    const campaignsRef = collection(db, 'campaigns');
+    let q = query(campaignsRef, where('status', '==', 'open'));
+
+    const snapshot = await getDocs(q);
+    let campaigns = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Campaign));
+
+    // Prioritize boosted, then location-based, then others
+    campaigns.sort((a, b) => {
+        if (a.isBoosted && !b.isBoosted) return -1;
+        if (!a.isBoosted && b.isBoosted) return 1;
+        if (userLocation) {
+            if (a.location === userLocation && b.location !== userLocation) return -1;
+            if (a.location !== userLocation && b.location === userLocation) return 1;
         }
-        const snapshot = await getDocs(q);
-        const adsFromChunk = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAd));
-        allAds = [...allAds, ...adsFromChunk];
+        return ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0);
+    });
+    
+    return campaigns;
+  },
+
+  applyToCampaign: async (applicationData: Omit<CampaignApplication, 'id' | 'status' | 'timestamp'>): Promise<void> => {
+    const campaignRef = doc(db, 'campaigns', applicationData.campaignId);
+    
+    const appRef = await addDoc(collection(db, 'campaign_applications'), {
+      ...applicationData,
+      collabId: generateCollabId(),
+      status: 'pending_brand_review',
+      timestamp: serverTimestamp(),
+    });
+
+    await updateDoc(campaignRef, {
+      applicantIds: arrayUnion(applicationData.influencerId)
+    });
+  },
+
+  updateCampaignApplication: async (appId: string, data: Partial<CampaignApplication>, actorId: string): Promise<void> => {
+    const docRef = doc(db, 'campaign_applications', appId);
+    await updateDoc(docRef, data);
+    
+    if (data.status) {
+        const appDoc = await getDoc(docRef);
+        if (!appDoc.exists()) return;
+        const app = appDoc.data() as CampaignApplication;
+        
+        const isActorBrand = actorId === app.brandId;
+        const recipientId = isActorBrand ? app.influencerId : app.brandId;
+        const actorName = isActorBrand ? app.brandName : app.influencerName;
+
+        let title = '';
+        let body = '';
+
+        switch (data.status) {
+            case 'brand_counter_offer': title = `New Offer for "${app.campaignTitle}"`; body = `${actorName} sent a counter-offer.`; break;
+            case 'influencer_counter_offer': title = `New Offer for "${app.campaignTitle}"`; body = `${actorName} sent an offer.`; break;
+            case 'agreement_reached': title = `Agreement Reached for "${app.campaignTitle}"`; body = `Payment is now pending from the brand.`; break;
+            case 'in_progress': if (data.paymentStatus === 'paid') { title = `Payment Confirmed!`; body = `${actorName} paid for "${app.campaignTitle}". You can start work.`; } break;
+            case 'work_submitted': title = `Work Submitted for "${app.campaignTitle}"`; body = `${actorName} submitted their work for review.`; break;
+            case 'completed': title = `Campaign Collab Completed!`; body = `${actorName} marked "${app.campaignTitle}" as complete.`; break;
+            case 'rejected': title = `Update on "${app.campaignTitle}"`; body = `Your application was rejected by ${actorName}.`; break;
+        }
+
+        if (title && body) {
+            await apiService.sendNotificationToUser(recipientId, title, body);
+        }
+    }
+  },
+
+  sendAdSlotRequest: async (requestData: Omit<AdSlotRequest, 'id' | 'status' | 'timestamp'>): Promise<void> => {
+    const userDocRef = doc(db, 'users', requestData.brandId);
+    const userDoc = await getDoc(userDocRef);
+    const user = userDoc.data() as User;
+
+    if (user.membership.plan === 'free' && user.membership.usage.liveTvBookings >= 1) {
+        throw new Error("You have reached your Live TV booking limit on the free plan. Please upgrade to Pro.");
     }
     
-    allAds.sort((a, b) => (b.isBoosted ? 1 : 0) - (a.isBoosted ? 1 : 0) || ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+    await addDoc(collection(db, 'ad_slot_requests'), {
+      ...requestData,
+      collabId: generateCollabId(),
+      status: 'pending_approval',
+      timestamp: serverTimestamp(),
+    });
+    await updateDoc(userDocRef, { 'membership.usage.liveTvBookings': increment(1) });
+  },
+
+  updateAdSlotRequest: async (reqId: string, data: Partial<AdSlotRequest>, actorId: string): Promise<void> => {
+    const docRef = doc(db, 'ad_slot_requests', reqId);
+    await updateDoc(docRef, data);
     
-    return allAds;
+    if (data.status) {
+        const reqDoc = await getDoc(docRef);
+        if (!reqDoc.exists()) return;
+        const req = reqDoc.data() as AdSlotRequest;
+
+        const isActorBrand = actorId === req.brandId;
+        const recipientId = isActorBrand ? req.liveTvId : req.brandId;
+        const actorName = isActorBrand ? req.brandName : req.liveTvName;
+
+        let title = '';
+        let body = '';
+
+        switch (data.status) {
+            case 'brand_offer': title = `New Offer for Ad Booking`; body = `${actorName} sent a counter-offer for "${req.campaignName}".`; break;
+            case 'agency_offer': title = `New Offer for "${req.campaignName}"`; body = `${actorName} has sent you an offer.`; break;
+            case 'in_progress': if (data.paymentStatus === 'paid') { title = `Ad Payment Confirmed!`; body = `Payment for "${req.campaignName}" is complete.`; } break;
+            case 'work_submitted': title = `Ad Campaign Submitted`; body = `${actorName} has marked "${req.campaignName}" as submitted/live.`; break;
+            case 'completed': title = `Ad Booking Completed`; body = `${actorName} has marked the "${req.campaignName}" booking as complete.`; break;
+        }
+        if (title && body) {
+            await apiService.sendNotificationToUser(recipientId, title, body);
+        }
+    }
+  },
+
+  createBannerAd: async (adData: Omit<BannerAd, 'id' | 'timestamp'>): Promise<void> => {
+    await addDoc(collection(db, 'banner_ads'), {
+      ...adData,
+      timestamp: serverTimestamp(),
+    });
+  },
+
+  getBannerAds: async (locationQuery: string, settings: PlatformSettings): Promise<BannerAd[]> => {
+    const adsRef = collection(db, 'banner_ads');
+    let q = query(adsRef);
+    if (locationQuery) {
+        q = query(adsRef, where('location', '==', locationQuery));
+    }
+    
+    const snapshot = await getDocs(q);
+    const allAds = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAd));
+    
+    const activeAgencyIds = await getUsersWithActiveMembership('banneragency');
+    
+    return allAds.filter(ad => activeAgencyIds.includes(ad.agencyId));
   },
 
   getBannerAdsForAgency: async (agencyId: string): Promise<BannerAd[]> => {
     const q = query(collection(db, 'banner_ads'), where('agencyId', '==', agencyId));
     const snapshot = await getDocs(q);
-    const ads = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAd));
-    // Client-side sort
-    ads.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-    return ads;
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAd));
   },
 
-  sendBannerAdBookingRequest: async (data: Omit<BannerAdBookingRequest, 'id'|'status'|'timestamp'>): Promise<void> => {
-    const userDocRef = doc(db, 'users', data.brandId);
+  updateBannerAdBookingRequest: async (reqId: string, data: Partial<BannerAdBookingRequest>, actorId: string): Promise<void> => {
+    const docRef = doc(db, 'banner_booking_requests', reqId);
+    await updateDoc(docRef, data);
+
+    if (data.status) {
+        const reqDoc = await getDoc(docRef);
+        if (!reqDoc.exists()) return;
+        const req = reqDoc.data() as BannerAdBookingRequest;
+
+        const isActorBrand = actorId === req.brandId;
+        const recipientId = isActorBrand ? req.agencyId : req.brandId;
+        const actorName = isActorBrand ? req.brandName : req.agencyName;
+
+        let title = '';
+        let body = '';
+
+        switch (data.status) {
+            case 'brand_offer': title = `New Offer for Banner Ad`; body = `${actorName} sent a counter-offer for "${req.campaignName}".`; break;
+            case 'agency_offer': title = `New Offer for "${req.campaignName}"`; body = `${actorName} has sent you an offer.`; break;
+            case 'in_progress': if (data.paymentStatus === 'paid') { title = `Banner Ad Payment Confirmed!`; body = `Payment for "${req.campaignName}" is complete.`; } break;
+            case 'work_submitted': title = `Banner Ad Live`; body = `${actorName} has marked your banner ad "${req.campaignName}" as live.`; break;
+            case 'completed': title = `Banner Ad Booking Completed`; body = `${actorName} has marked the "${req.campaignName}" booking as complete.`; break;
+        }
+        if (title && body) {
+            await apiService.sendNotificationToUser(recipientId, title, body);
+        }
+    }
+  },
+  
+  sendBannerAdBookingRequest: async (requestData: Omit<BannerAdBookingRequest, 'id' | 'status' | 'timestamp'>): Promise<void> => {
+    const userDocRef = doc(db, 'users', requestData.brandId);
     const userDoc = await getDoc(userDocRef);
     const user = userDoc.data() as User;
+    
     if (user.membership.plan === 'free' && user.membership.usage.bannerAdBookings >= 1) {
-        throw new Error("You have reached your Banner Ad booking limit on the free plan. Please upgrade to Pro.");
+        throw new Error("You have reached your banner ad booking limit on the free plan. Please upgrade to Pro.");
     }
+
     await addDoc(collection(db, 'banner_booking_requests'), {
-        ...data,
-        status: 'pending_approval',
-        timestamp: serverTimestamp(),
+      ...requestData,
+      collabId: generateCollabId(),
+      status: 'pending_approval',
+      timestamp: serverTimestamp(),
     });
     await updateDoc(userDocRef, { 'membership.usage.bannerAdBookings': increment(1) });
   },
 
-  getBannerAdBookingRequestsForAgency: async (agencyId: string): Promise<BannerAdBookingRequest[]> => {
-      const q = query(collection(db, 'banner_booking_requests'), where('agencyId', '==', agencyId));
-      const snapshot = await getDocs(q);
-      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
-      requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-      return requests;
-  },
-
-  updateBannerAdBookingRequest: async (reqId: string, data: Partial<BannerAdBookingRequest>): Promise<void> => {
-      const docRef = doc(db, 'banner_booking_requests', reqId);
-      await updateDoc(docRef, data);
-  },
-
-  getBannerAdBookingRequestsForBrand: async (brandId: string): Promise<BannerAdBookingRequest[]> => {
-      const q = query(collection(db, 'banner_booking_requests'), where('brandId', '==', brandId));
-      const snapshot = await getDocs(q);
-      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
-      requests.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-      return requests;
-  },
-  
-  getAllBannerAdBookingRequests: async (): Promise<BannerAdBookingRequest[]> => {
-      const snapshot = await getDocs(collection(db, 'banner_booking_requests'));
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
-  },
-  
-  getAllCollaborationRequests: async (): Promise<CollaborationRequest[]> => {
-    const snapshot = await getDocs(collection(db, 'collaboration_requests'));
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CollaborationRequest));
-  },
-
-  // Membership
   activateMembership: async (userId: string, plan: MembershipPlan): Promise<void> => {
     const userRef = doc(db, 'users', userId);
-    
-    let months = 0;
-    if (plan === 'normal_1m') months = 1;
-    if (plan === 'normal_6m') months = 6;
-    if (plan === 'normal_1y' || plan.startsWith('pro_')) months = 12;
+    const durationMap: Record<string, number> = { 'normal_1m': 1, 'normal_6m': 6, 'normal_1y': 12 };
+    const monthsToAdd = durationMap[plan] ?? 12; // Default to 1 year for Pro plans
 
     const now = new Date();
-    const expiresAt = new Date(now);
-    expiresAt.setMonth(expiresAt.getMonth() + months);
+    const expiresAt = new Date(now.setMonth(now.getMonth() + monthsToAdd));
 
-    await updateDoc(userRef, {
-        'membership.plan': plan,
-        'membership.isActive': true,
-        'membership.startsAt': Timestamp.fromDate(now),
-        'membership.expiresAt': Timestamp.fromDate(expiresAt),
-        'membership.usage': {
-            directCollaborations: 0,
-            campaigns: 0,
-            liveTvBookings: 0,
-            bannerAdBookings: 0,
+    const newMembership: Membership = {
+        plan,
+        isActive: true,
+        startsAt: Timestamp.now(),
+        expiresAt: Timestamp.fromDate(expiresAt),
+        usage: { directCollaborations: 0, campaigns: 0, liveTvBookings: 0, bannerAdBookings: 0 }
+    };
+
+    const batch = writeBatch(db);
+
+    // Update user document
+    batch.update(userRef, { membership: newMembership });
+
+    // Check user role and update corresponding influencer profile if necessary
+    const userDoc = await getDoc(userRef);
+    if (userDoc.exists()) {
+        const user = userDoc.data() as User;
+        if (user.role === 'influencer') {
+            const influencerRef = doc(db, 'influencers', userId);
+            // Update the denormalized flag on the influencer profile for querying
+            batch.update(influencerRef, { membershipActive: true });
         }
-    });
-  },
-
-  uploadPostImage: (postId: string, file: File): Promise<string> => {
-    const storageRef = ref(storage, `post_images/${postId}`);
-    return new Promise((resolve, reject) => {
-        uploadBytes(storageRef, file)
-            .then(snapshot => getDownloadURL(snapshot.ref))
-            .then(resolve)
-            .catch(reject);
-    });
-  },
-
-  createPost: async (postData: Omit<Post, 'id'>): Promise<Post> => {
-    const docRef = await addDoc(collection(db, 'posts'), { ...postData, visibility: postData.visibility || 'public' });
-    return { id: docRef.id, ...postData, visibility: postData.visibility || 'public' };
-  },
-
-  getPosts: async (currentUserId?: string): Promise<Post[]> => {
-    const postsRef = collection(db, 'posts');
-    // Query 1: All public posts
-    const publicQ = query(postsRef, where('visibility', '==', 'public'));
-    const publicSnapshot = await getDocs(publicQ);
-    let posts = publicSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
-
-    if (currentUserId) {
-        // Query 2: Current user's private posts
-        const privateQ = query(postsRef, where('userId', '==', currentUserId), where('visibility', '==', 'private'));
-        const privateSnapshot = await getDocs(privateQ);
-        const privatePosts = privateSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
-        posts = [...posts, ...privatePosts];
     }
-
-    // Filter out blocked and sort by timestamp in memory to avoid composite index requirement
-    posts = posts.filter(p => p.isBlocked !== true);
-    posts.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
-
-    return posts;
+    
+    await batch.commit();
   },
 
-  updatePost: async (postId: string, data: Partial<Post>): Promise<void> => {
-    await updateDoc(doc(db, 'posts', postId), data);
+  getAdSlotRequestsForBrand: async (brandId: string): Promise<AdSlotRequest[]> => {
+    const q = query(collection(db, 'ad_slot_requests'), where('brandId', '==', brandId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AdSlotRequest));
   },
   
-  deletePost: async (postId: string): Promise<void> => {
-    await deleteDoc(doc(db, 'posts', postId));
+  getBannerAdBookingRequestsForBrand: async (brandId: string): Promise<BannerAdBookingRequest[]> => {
+    const q = query(collection(db, 'banner_booking_requests'), where('brandId', '==', brandId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BannerAdBookingRequest));
+  },
+
+  getActiveAdCollabsForAgency: async (agencyId: string, role: 'livetv' | 'banneragency'): Promise<(AdSlotRequest | BannerAdBookingRequest)[]> => {
+    const collectionName = role === 'livetv' ? 'ad_slot_requests' : 'banner_booking_requests';
+    const idField = role === 'livetv' ? 'liveTvId' : 'agencyId';
+    
+    const q = query(collection(db, collectionName), where(idField, '==', agencyId), where('status', 'in', ['in_progress', 'work_submitted']));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AdSlotRequest | BannerAdBookingRequest));
+  },
+  
+  submitDailyPayoutRequest: async (requestData: Omit<DailyPayoutRequest, 'id' | 'timestamp'>): Promise<void> => {
+    await addDoc(collection(db, 'daily_payout_requests'), {
+      ...requestData,
+      status: 'pending',
+      timestamp: serverTimestamp(),
+    });
+  },
+
+  uploadPostImage: async (postId: string, file: File): Promise<string> => {
+    const storageRef = ref(storage, `post_images/${postId}/${file.name}`);
+    await uploadBytes(storageRef, file);
+    return getDownloadURL(storageRef);
+  },
+  
+  createPost: async (postData: Omit<Post, 'id'>): Promise<Post> => {
+    const docRef = await addDoc(collection(db, 'posts'), postData);
+    return { id: docRef.id, ...postData };
   },
 
   toggleLikePost: async (postId: string, userId: string): Promise<void> => {
     const postRef = doc(db, 'posts', postId);
     const postDoc = await getDoc(postRef);
     if (postDoc.exists()) {
-      const post = postDoc.data() as Post;
-      if (post.likes.includes(userId)) {
-        await updateDoc(postRef, { likes: arrayRemove(userId) });
-      } else {
-        await updateDoc(postRef, { likes: arrayUnion(userId) });
-      }
+        const post = postDoc.data() as Post;
+        if (post.likes.includes(userId)) {
+            await updateDoc(postRef, { likes: arrayRemove(userId) });
+        } else {
+            await updateDoc(postRef, { likes: arrayUnion(userId) });
+        }
     }
   },
 
@@ -1432,123 +1522,146 @@ export const apiService = {
     const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment));
   },
-
+  
   addCommentToPost: async (postId: string, commentData: Omit<Comment, 'id' | 'timestamp'>): Promise<void> => {
     const postRef = doc(db, 'posts', postId);
-    const commentsRef = collection(db, `posts/${postId}/comments`);
-
-    const batch = writeBatch(db);
-    batch.set(doc(commentsRef), { ...commentData, timestamp: serverTimestamp() });
-    batch.update(postRef, { commentCount: increment(1) });
-    await batch.commit();
+    await addDoc(collection(db, `posts/${postId}/comments`), { ...commentData, timestamp: serverTimestamp() });
+    await updateDoc(postRef, { commentCount: increment(1) });
   },
-  
-  // KYC
-  submitKyc: async (userId: string, details: KycDetails, idProofFile: File | null, selfieFile: File | null): Promise<void> => {
-    const userRef = doc(db, 'users', userId);
-    let idProofUrl = details.idProofUrl;
-    let selfieUrl = details.selfieUrl;
 
-    if (idProofFile) {
-        idProofUrl = await apiService.uploadKycFile(userId, idProofFile, 'id_proof');
-    }
-    if (selfieFile) {
-        selfieUrl = await apiService.uploadKycFile(userId, selfieFile, 'selfie');
-    }
-    
-    await updateDoc(userRef, {
-        kycStatus: 'pending',
-        kycDetails: { ...details, idProofUrl, selfieUrl },
+  createTransaction: async (txData: Omit<Transaction, 'id' | 'timestamp'>): Promise<void> => {
+    await addDoc(collection(db, 'transactions'), {
+        ...txData,
+        timestamp: serverTimestamp(),
     });
   },
-
-  submitDigilockerKyc: async (userId: string): Promise<void> => {
-      // In a real scenario, this would receive verified data from a backend callback
-      const dummyData: KycDetails = {
-          address: 'Verified via DigiLocker',
-          villageTown: 'Verified via DigiLocker',
-          pincode: '000000',
-          city: 'Verified',
-          state: 'Verified',
-          district: 'Verified',
-      };
-      await updateDoc(doc(db, 'users', userId), {
-          kycStatus: 'approved',
-          kycDetails: dummyData,
-      });
-  },
   
-  getKycSubmissions: async (): Promise<User[]> => {
-    const q = query(collection(db, 'users'), where('kycStatus', '==', 'pending'));
+  getTransactionsForUser: async (userId: string): Promise<Transaction[]> => {
+    // Client-side sorting to avoid composite index requirement
+    const q = query(collection(db, 'transactions'), where('userId', '==', userId));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
+    const transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transaction));
+    return transactions.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
   },
-  
-  updateKycStatus: async (userId: string, status: KycStatus, reason?: string): Promise<void> => {
-    const data: { kycStatus: KycStatus, 'kycDetails.rejectionReason'?: string } = { kycStatus: status };
-    if (status === 'rejected' && reason) {
-        data['kycDetails.rejectionReason'] = reason;
-    }
-    await updateDoc(doc(db, 'users', userId), data);
-  },
-  
-  // Live Help
-  getOrCreateLiveHelpSession: async (userId: string, userName: string, userAvatar: string, staffId: string): Promise<string> => {
-    const sessionsRef = collection(db, 'live_help_sessions');
-    const q = query(sessionsRef, where('userId', '==', userId), where('status', '==', 'open'));
-    const snapshot = await getDocs(q);
 
-    if (!snapshot.empty) {
-        return snapshot.docs[0].id;
-    } else {
-        const newSessionRef = await addDoc(sessionsRef, {
-            userId,
-            userName,
-            userAvatar,
-            assignedStaffId: staffId,
-            status: 'open',
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            userHasUnread: false,
-            staffHasUnread: true,
-        });
-        return newSessionRef.id;
-    }
+  getPayoutHistoryForUser: async (userId: string): Promise<PayoutRequest[]> => {
+    // Client-side sorting to avoid composite index requirement
+    const q = query(collection(db, 'payout_requests'), where('userId', '==', userId));
+    const snapshot = await getDocs(q);
+    const payouts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PayoutRequest));
+    return payouts.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+  },
+  
+  submitPayoutRequest: async (requestData: Omit<PayoutRequest, 'id' | 'status' | 'timestamp'>): Promise<void> => {
+    const batch = writeBatch(db);
+
+    const payload = { ...requestData, status: 'pending' as const, timestamp: serverTimestamp() };
+
+    // Firestore throws an error if any field value is `undefined`.
+    // This removes any keys that have an `undefined` value before sending.
+    Object.keys(payload).forEach(key => {
+        if (payload[key as keyof typeof payload] === undefined) {
+            delete (payload as any)[key];
+        }
+    });
+    
+    // 1. Create payout request document
+    const payoutRef = doc(collection(db, 'payout_requests'));
+    batch.set(payoutRef, payload);
+    
+    // 2. Update collaboration status
+    const collabCollectionName = getCollectionNameForCollab(requestData.collaborationType);
+    const collabRef = doc(db, collabCollectionName, requestData.collaborationId);
+    batch.update(collabRef, { paymentStatus: 'payout_requested' });
+    
+    await batch.commit();
   },
 
   sendLiveHelpMessage: async (sessionId: string, senderId: string, senderName: string, text: string): Promise<void> => {
     const sessionRef = doc(db, 'live_help_sessions', sessionId);
     const messagesRef = collection(db, `live_help_sessions/${sessionId}/messages`);
 
-    const batch = writeBatch(db);
-
-    batch.set(doc(messagesRef), {
-        senderId,
-        senderName,
-        text,
-        timestamp: serverTimestamp(),
-    });
-
-    // Update timestamp and unread status
-    const sessionDoc = await getDoc(sessionRef);
-    const sessionData = sessionDoc.data() as LiveHelpSession;
-    const isUserSender = senderId === sessionData.userId;
-
-    batch.update(sessionRef, {
-        updatedAt: serverTimestamp(),
-        staffHasUnread: isUserSender,
-        userHasUnread: !isUserSender,
-    });
-    
-    await batch.commit();
+    await addDoc(messagesRef, { senderId, senderName, text, timestamp: serverTimestamp() });
+    await updateDoc(sessionRef, { updatedAt: serverTimestamp(), staffHasUnread: true });
   },
   
   closeLiveHelpSession: async (sessionId: string): Promise<void> => {
-      const sessionRef = doc(db, 'live_help_sessions', sessionId);
-      await updateDoc(sessionRef, {
-          status: 'closed',
-          updatedAt: serverTimestamp(),
-      });
+    await updateDoc(doc(db, 'live_help_sessions', sessionId), { status: 'closed', updatedAt: serverTimestamp() });
+  },
+  
+  createRefundRequest: async (data: Omit<RefundRequest, 'id' | 'status' | 'timestamp'>): Promise<void> => {
+    const batch = writeBatch(db);
+
+    const payload = {
+        ...data,
+        status: 'pending' as const,
+        timestamp: serverTimestamp(),
+    };
+
+    // Firestore throws an error if any field value is `undefined`.
+    // This removes any keys that have an `undefined` value before sending.
+    Object.keys(payload).forEach(key => {
+        if (payload[key as keyof typeof payload] === undefined) {
+            delete (payload as any)[key];
+        }
+    });
+
+    // 1. Create the refund request document
+    const refundRef = doc(collection(db, 'refund_requests'));
+    batch.set(refundRef, payload);
+
+    // 2. Update the original collaboration's status
+    const collabCollectionName = getCollectionNameForCollab(data.collabType);
+    // FIX: Use `collaborationId` instead of `collabId` to reference the document.
+    const collabRef = doc(db, collabCollectionName, data.collaborationId);
+    batch.update(collabRef, { status: 'refund_pending_admin_review' });
+
+    await batch.commit();
   },
 
-}; // End of apiService object
+  updatePayoutStatus: async (payoutId: string, status: PayoutRequest['status'], collabId: string, collabType: PayoutRequest['collaborationType'], reason?: string): Promise<void> => {
+    const batch = writeBatch(db);
+    const payoutRef = doc(db, 'payout_requests', payoutId);
+    
+    const updateData: Partial<PayoutRequest> = { status };
+    if (reason !== undefined) {
+        updateData.rejectionReason = reason;
+    }
+    batch.update(payoutRef, updateData as any);
+
+    if (status === 'approved' || status === 'rejected') {
+        const collabCollectionName = getCollectionNameForCollab(collabType);
+        const collabRef = doc(db, collabCollectionName, collabId);
+        batch.update(collabRef, { paymentStatus: status === 'approved' ? 'payout_complete' : 'paid' });
+    }
+    await batch.commit();
+  },
+
+  updateRefundRequest: async (refundId: string, data: Partial<RefundRequest>): Promise<void> => {
+    await updateDoc(doc(db, 'refund_requests', refundId), data);
+  },
+
+  updateDailyPayoutRequestStatus: async (requestId: string, collabId: string, collabType: 'ad_slot' | 'banner_booking', status: 'approved' | 'rejected', approvedAmount?: number, reason?: string): Promise<void> => {
+    const batch = writeBatch(db);
+    const requestRef = doc(db, 'daily_payout_requests', requestId);
+    const updateData: any = { status };
+    if (reason !== undefined) updateData.rejectionReason = reason;
+    if (approvedAmount !== undefined) updateData.approvedAmount = approvedAmount;
+    batch.update(requestRef, updateData);
+
+    if (status === 'approved' && approvedAmount && approvedAmount > 0) {
+        const collabCollection = collabType === 'ad_slot' ? 'ad_slot_requests' : 'banner_booking_requests';
+        const collabRef = doc(db, collabCollection, collabId);
+        batch.update(collabRef, { dailyPayoutsReceived: increment(approvedAmount) });
+    }
+    await batch.commit();
+  },
+
+  updateDailyPayoutRequest: async (requestId: string, data: Partial<DailyPayoutRequest>): Promise<void> => {
+    await updateDoc(doc(db, 'daily_payout_requests', requestId), data);
+  },
+  
+  updatePayoutRequest: async (payoutId: string, data: Partial<PayoutRequest>): Promise<void> => {
+    await updateDoc(doc(db, 'payout_requests', payoutId), data);
+  },
+};

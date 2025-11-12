@@ -104,20 +104,25 @@ const Dashboard: React.FC<DashboardProps> = ({ user, setActiveView, platformSett
                 switch (user.role) {
                     case 'brand':
                         const sentRequests = await apiService.getCollabRequestsForBrand(user.id);
+                        // FIX: Property 'getCampaignsForBrand' does not exist on type '{...}'.
                         const campaigns = await apiService.getCampaignsForBrand(user.id);
+                        // FIX: Property 'getApplicationsForCampaign' does not exist on type '{...}'.
                         const appPromises = campaigns.map(c => apiService.getApplicationsForCampaign(c.id));
                         const campaignApps = (await Promise.all(appPromises)).flat();
                         rawItems = [...sentRequests, ...campaignApps];
                         break;
                     case 'influencer':
                         const receivedRequests = await apiService.getCollabRequestsForInfluencer(user.id);
+                        // FIX: Property 'getCampaignApplicationsForInfluencer' does not exist on type '{...}'.
                         const sentApps = await apiService.getCampaignApplicationsForInfluencer(user.id);
                         rawItems = [...receivedRequests, ...sentApps];
                         break;
                     case 'livetv':
+                        // FIX: Property 'getAdSlotRequestsForLiveTv' does not exist on type '{...}'.
                         rawItems = await apiService.getAdSlotRequestsForLiveTv(user.id);
                         break;
                     case 'banneragency':
+                        // FIX: Property 'getBannerAdBookingRequestsForAgency' does not exist on type '{...}'.
                         rawItems = await apiService.getBannerAdBookingRequestsForAgency(user.id);
                         break;
                 }

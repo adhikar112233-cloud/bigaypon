@@ -71,6 +71,8 @@ const DisputeModal: React.FC<DisputeModalProps> = ({ user, collaboration, onClos
 
             const collabType = getCollaborationType();
             const partner = getPartnerDetails();
+            const finalAmountRaw = collaboration?.finalAmount ? parseFloat(String(collaboration.finalAmount).replace(/[^0-9.-]+/g, "")) : 0;
+            const finalAmount = isNaN(finalAmountRaw) ? 0 : finalAmountRaw;
 
             await apiService.createDispute({
                 collaborationId: collaboration.id,
@@ -83,6 +85,8 @@ const DisputeModal: React.FC<DisputeModalProps> = ({ user, collaboration, onClos
                 disputedAgainstName: partner.name,
                 disputedAgainstAvatar: partner.avatar,
                 reason,
+                amount: finalAmount,
+                collabId: collaboration.collabId,
             });
             onDisputeSubmitted();
         } catch (err) {
@@ -105,6 +109,7 @@ const DisputeModal: React.FC<DisputeModalProps> = ({ user, collaboration, onClos
                 <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg border dark:border-gray-600 mb-4 dark:text-gray-300">
                     <p><span className="font-semibold">Collaboration:</span> {collaborationTitle}</p>
                     <p><span className="font-semibold">Partner:</span> {partner.name}</p>
+                    {collaboration.collabId && <p><span className="font-semibold">Collab ID:</span> <span className="font-mono">{collaboration.collabId}</span></p>}
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">

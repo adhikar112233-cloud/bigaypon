@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { User, PlatformSettings, MembershipPlan } from '../types';
 import { apiService } from '../services/apiService';
@@ -18,18 +19,31 @@ const MembershipPage: React.FC<MembershipPageProps> = ({ user, platformSettings,
 
     const isCreator = ['influencer', 'livetv', 'banneragency'].includes(user.role);
 
+    const getDiscountedPrice = (originalPrice: number, discountSetting: { isEnabled: boolean; percentage: number }) => {
+        if (discountSetting.isEnabled && discountSetting.percentage > 0) {
+          return originalPrice * (1 - discountSetting.percentage / 100);
+        }
+        return originalPrice;
+    };
+
     const brandPlans = [
-        { id: 'pro_10' as MembershipPlan, name: 'Pro 10', price: platformSettings.membershipPrices.pro_10, description: 'Up to 10 of each collaboration type per year.', limit: '10 Collaborations' },
-        { id: 'pro_20' as MembershipPlan, name: 'Pro 20', price: platformSettings.membershipPrices.pro_20, description: 'Up to 20 of each collaboration type per year.', limit: '20 Collaborations' },
-        { id: 'pro_unlimited' as MembershipPlan, name: 'Pro Unlimited', price: platformSettings.membershipPrices.pro_unlimited, description: 'Unlimited collaborations.', limit: 'Unlimited' },
-    ];
+        { id: 'pro_10' as MembershipPlan, name: 'Pro 10', originalPrice: platformSettings.membershipPrices.pro_10, description: 'Up to 10 of each collaboration type per year.', limit: '10 Collaborations' },
+        { id: 'pro_20' as MembershipPlan, name: 'Pro 20', originalPrice: platformSettings.membershipPrices.pro_20, description: 'Up to 20 of each collaboration type per year.', limit: '20 Collaborations' },
+        { id: 'pro_unlimited' as MembershipPlan, name: 'Pro Unlimited', originalPrice: platformSettings.membershipPrices.pro_unlimited, description: 'Unlimited collaborations.', limit: 'Unlimited' },
+    ].map(plan => ({
+        ...plan,
+        price: getDiscountedPrice(plan.originalPrice, platformSettings.discountSettings.brandMembership)
+    }));
     
     const creatorPlans = [
-        { id: 'normal_1m' as MembershipPlan, name: '1 Month', price: platformSettings.membershipPrices.normal_1m, description: 'Get full visibility to brands for one month.', limit: 'Unlimited Collabs' },
-        { id: 'normal_6m' as MembershipPlan, name: '6 Months', price: platformSettings.membershipPrices.normal_6m, description: 'Best value for short-term projects.', limit: 'Unlimited Collabs' },
-        { id: 'normal_1y' as MembershipPlan, name: '1 Year', price: platformSettings.membershipPrices.normal_1y, description: 'Maximum savings for long-term growth.', limit: 'Unlimited Collabs' },
-    ];
-    
+        { id: 'normal_1m' as MembershipPlan, name: '1 Month', originalPrice: platformSettings.membershipPrices.normal_1m, description: 'Get full visibility to brands for one month.', limit: 'Unlimited Collabs' },
+        { id: 'normal_6m' as MembershipPlan, name: '6 Months', originalPrice: platformSettings.membershipPrices.normal_6m, description: 'Best value for short-term projects.', limit: 'Unlimited Collabs' },
+        { id: 'normal_1y' as MembershipPlan, name: '1 Year', originalPrice: platformSettings.membershipPrices.normal_1y, description: 'Maximum savings for long-term growth.', limit: 'Unlimited Collabs' },
+    ].map(plan => ({
+        ...plan,
+        price: getDiscountedPrice(plan.originalPrice, platformSettings.discountSettings.creatorMembership)
+    }));
+
     const handleChoosePlan = (plan: MembershipPlan, price: number) => {
         setError(null);
         setPayingForPlan({ plan, price });
@@ -67,9 +81,11 @@ const MembershipPage: React.FC<MembershipPageProps> = ({ user, platformSettings,
         };
 
         const { plan, isActive, expiresAt, usage } = effectiveMembership;
+        
+        const isCurrentlyActive = effectiveMembership.isActive && expiresAt && (expiresAt as Timestamp).toDate() > new Date();
 
         const expiryDate = (expiresAt as Timestamp)?.toDate?.()?.toLocaleDateString() ?? 'N/A';
-        
+
         const usageLimits: Record<MembershipPlan, number | typeof Infinity> = {
             free: 1,
             pro_10: 10,
@@ -87,6 +103,7 @@ const MembershipPage: React.FC<MembershipPageProps> = ({ user, platformSettings,
             return `${limit} / type / year`;
         }
 
+
         return (
             <div className="mb-10 p-6 bg-white rounded-2xl shadow-lg border-2 border-indigo-500">
                 <h2 className="text-2xl font-bold text-gray-800">Your Current Plan</h2>
@@ -97,7 +114,7 @@ const MembershipPage: React.FC<MembershipPageProps> = ({ user, platformSettings,
                     </div>
                      <div>
                         <p className="text-sm text-gray-500">Status</p>
-                        <p className={`text-lg font-semibold ${isActive ? 'text-green-600' : 'text-gray-600'}`}>{isActive ? 'Active' : 'Inactive'}</p>
+                        <p className={`text-lg font-semibold ${isCurrentlyActive ? 'text-green-600' : 'text-gray-600'}`}>{isCurrentlyActive ? 'Active' : 'Inactive'}</p>
                     </div>
                      <div>
                         <p className="text-sm text-gray-500">Expires On</p>
@@ -126,6 +143,8 @@ const MembershipPage: React.FC<MembershipPageProps> = ({ user, platformSettings,
     const plansToShow = isCreator
         ? (platformSettings.isCreatorMembershipEnabled ? creatorPlans : [])
         : (platformSettings.isProMembershipEnabled ? brandPlans : []);
+        
+    const discountSetting = isCreator ? platformSettings.discountSettings.creatorMembership : platformSettings.discountSettings.brandMembership;
 
     return (
         <div className="max-w-7xl mx-auto space-y-6">
@@ -147,10 +166,18 @@ const MembershipPage: React.FC<MembershipPageProps> = ({ user, platformSettings,
                         <div key={plan.id} className="bg-white rounded-2xl shadow-lg p-8 flex flex-col text-center transform hover:-translate-y-2 transition-transform duration-300">
                             <h3 className="text-2xl font-bold">{plan.name}</h3>
                             <p className="text-gray-500 mt-2">{plan.description}</p>
-                            <p className="text-4xl font-extrabold text-gray-800 my-6">
-                                ₹{(plan.price || 0).toLocaleString('en-IN')}
-                                <span className="text-base font-medium text-gray-500"> / {isCreator ? 'period' : 'year'}</span>
-                            </p>
+                            <div className="my-6">
+                                {discountSetting.isEnabled && plan.price !== plan.originalPrice && (
+                                    <div>
+                                        <del className="text-2xl font-bold text-gray-400">₹{plan.originalPrice.toLocaleString('en-IN')}</del>
+                                        <p className="text-sm font-semibold text-green-600">{discountSetting.percentage}% OFF</p>
+                                    </div>
+                                )}
+                                <p className="text-4xl font-extrabold text-gray-800">
+                                    ₹{plan.price.toLocaleString('en-IN')}
+                                    <span className="text-base font-medium text-gray-500"> / {isCreator ? 'period' : 'year'}</span>
+                                </p>
+                            </div>
                             <div className="flex-grow"></div>
                             <button
                                 onClick={() => handleChoosePlan(plan.id, plan.price)}

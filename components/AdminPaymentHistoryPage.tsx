@@ -1,11 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import { User, Transaction, PayoutRequest, UserRole } from '../types';
 import { Timestamp } from 'firebase/firestore';
+import * as geminiService from '../services/geminiService';
+import { SparklesIcon } from './Icons';
+
 
 interface AdminPaymentHistoryPageProps {
     transactions: Transaction[];
     payouts: PayoutRequest[];
     allUsers: User[];
+    collaborations: { id: string; trackingId?: string }[];
 }
 
 interface CombinedHistoryItem {
@@ -18,24 +22,29 @@ interface CombinedHistoryItem {
     userName: string;
     userAvatar: string;
     userRole: UserRole;
+    userPiNumber?: string;
+    collaborationId: string;
+    collabId?: string;
 }
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
     const s = status.toLowerCase();
-    let colorClasses = "bg-gray-100 text-gray-800";
+    let colorClasses = "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300";
     if (s === 'completed' || s === 'approved') {
-        colorClasses = "bg-green-100 text-green-800";
+        colorClasses = "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300";
     } else if (s === 'pending') {
-        colorClasses = "bg-yellow-100 text-yellow-800";
+        colorClasses = "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300";
     } else if (s === 'rejected' || s === 'failed') {
-        colorClasses = "bg-red-100 text-red-800";
+        colorClasses = "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300";
     }
     return <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${colorClasses} capitalize`}>{status.replace('_', ' ')}</span>;
 };
 
-const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ transactions, payouts, allUsers }) => {
+const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ transactions, payouts, allUsers, collaborations }) => {
     const [activeTab, setActiveTab] = useState<'all' | 'payments' | 'payouts'>('all');
-    const [searchTerm, setSearchTerm] = useState('');
+    const [searchQuery, setSearchQuery] = useState('');
+    const [isAiSearching, setIsAiSearching] = useState(false);
+    const [filteredIds, setFilteredIds] = useState<string[] | null>(null);
 
     const combinedHistory = useMemo<CombinedHistoryItem[]>(() => {
         const userMap: Map<string, User> = new Map(allUsers.map(u => [u.id, u]));
@@ -43,7 +52,7 @@ const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ trans
         const safeToDate = (ts: any): Date | undefined => {
             if (ts && typeof ts.toDate === 'function') {
                 try {
-                    return (ts as Timestamp).toDate();
+                    return ts.toDate();
                 } catch (e) {
                     return undefined;
                 }
@@ -63,6 +72,9 @@ const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ trans
                 userName: user?.name || 'Unknown User',
                 userAvatar: user?.avatar || '',
                 userRole: user?.role || 'brand', // Default to brand for safety
+                userPiNumber: user?.piNumber,
+                collaborationId: t.relatedId,
+                collabId: t.collabId,
             };
         });
 
@@ -78,6 +90,9 @@ const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ trans
                 userName: p.userName,
                 userAvatar: p.userAvatar,
                 userRole: user?.role || 'influencer', // Default to influencer for safety
+                userPiNumber: user?.piNumber,
+                collaborationId: p.collaborationId || '',
+                collabId: p.collabId,
             };
         });
 
@@ -88,6 +103,24 @@ const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ trans
         });
     }, [transactions, payouts, allUsers]);
     
+     const handleAiSearch = async () => {
+        if (!searchQuery.trim()) {
+            setFilteredIds(null);
+            return;
+        }
+        setIsAiSearching(true);
+        try {
+            const matchedIds = await geminiService.filterTransactionsWithAI(searchQuery, combinedHistory);
+            setFilteredIds(matchedIds);
+        } catch (err) {
+            console.error(err);
+            alert("AI Search failed. Please try again.");
+            setFilteredIds(null);
+        } finally {
+            setIsAiSearching(false);
+        }
+    };
+
     const filteredHistory = useMemo(() => {
         let history = combinedHistory;
 
@@ -97,95 +130,107 @@ const AdminPaymentHistoryPage: React.FC<AdminPaymentHistoryPageProps> = ({ trans
         if (activeTab === 'payouts') {
             history = history.filter(item => item.type === 'Payout');
         }
-
-        if (!searchTerm.trim()) {
-            return history;
+        
+        if (filteredIds !== null) {
+            const idSet = new Set(filteredIds);
+            history = history.filter(r => idSet.has(r.transactionId));
         }
 
-        const lowerSearch = searchTerm.toLowerCase();
-        return history.filter(item =>
-            item.userName.toLowerCase().includes(lowerSearch) ||
-            item.description.toLowerCase().includes(lowerSearch) ||
-            item.transactionId.toLowerCase().includes(lowerSearch)
-        );
-    }, [combinedHistory, activeTab, searchTerm]);
+        return history;
+    }, [combinedHistory, activeTab, filteredIds]);
 
     const TabButton: React.FC<{ tab: typeof activeTab, children: React.ReactNode }> = ({ tab, children }) => (
         <button
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium rounded-md ${activeTab === tab ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'}`}
+            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === tab ? 'bg-indigo-100 text-indigo-700 dark:bg-gray-700 dark:text-indigo-300' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-900'}`}
         >
             {children}
         </button>
     );
 
     return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold text-gray-800">Platform Payment History</h1>
-                <p className="text-gray-500 mt-1">Review all payments and payouts across the platform.</p>
+        <div className="flex flex-col h-full">
+            <div className="flex-shrink-0 px-6 pt-6">
+                <h1 className="text-3xl font-bold text-gray-800 dark:text-gray-100">Platform Payment History</h1>
+                <p className="text-gray-500 dark:text-gray-400 mt-1">Review all payments and payouts across the platform.</p>
             </div>
-            <div className="bg-white shadow-lg rounded-2xl overflow-hidden">
-                <div className="p-4 border-b flex justify-between items-center flex-wrap gap-4">
+            
+            <div className="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden mt-6 mx-6 mb-6 flex flex-col flex-1">
+                <div className="p-4 border-b dark:border-gray-700 flex justify-between items-center flex-wrap gap-4 flex-shrink-0">
                     <nav className="flex space-x-2">
                         <TabButton tab="all">All</TabButton>
                         <TabButton tab="payments">Payments Made</TabButton>
                         <TabButton tab="payouts">Payouts</TabButton>
                     </nav>
-                    <div className="w-full sm:w-auto sm:max-w-xs">
+                     <div className="relative w-full sm:w-auto sm:max-w-md">
                         <input
                             type="text"
-                            placeholder="Search by user, description, ID..."
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                            placeholder="AI search (e.g., 'payouts over 5000 to rrr')"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
+                            className="w-full p-3 pr-28 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"
                         />
+                        <button
+                            onClick={handleAiSearch}
+                            disabled={isAiSearching}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center px-3 py-1.5 text-sm font-semibold text-white bg-gradient-to-r from-teal-400 to-indigo-600 rounded-md shadow hover:shadow-md disabled:opacity-50"
+                        >
+                            <SparklesIcon className={`w-4 h-4 mr-1 ${isAiSearching ? 'animate-spin' : ''}`} />
+                            {isAiSearching ? '...' : 'AI Search'}
+                        </button>
                     </div>
                 </div>
-                {filteredHistory.length === 0 ? (
-                    <p className="p-6 text-center text-gray-500">No transactions found.</p>
-                ) : (
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-50">
-                                <tr>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Transaction ID</th>
-                                </tr>
-                            </thead>
-                            <tbody className="bg-white divide-y divide-gray-200">
-                                {filteredHistory.map((item, index) => (
-                                    <tr key={`${item.transactionId}-${index}`}>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.date?.toLocaleString() || 'Invalid Date'}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            <div className="flex items-center">
-                                                <img className="h-8 w-8 rounded-full" src={item.userAvatar} alt={item.userName} />
-                                                <div className="ml-3">
-                                                    <div className="text-sm font-medium text-gray-900">{item.userName}</div>
-                                                    <div className="text-xs text-gray-500 capitalize">{item.userRole}</div>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 max-w-xs truncate">{item.description}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            <span className={`font-semibold ${item.type === 'Payment Made' ? 'text-red-600' : 'text-green-600'}`}>{item.type}</span>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-semibold">
-                                            {item.type === 'Payment Made' ? '-' : '+'} ₹{(item.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap"><StatusBadge status={item.status} /></td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono max-w-[100px] truncate">{item.transactionId}</td>
+
+                <div className="overflow-y-auto flex-1">
+                    {filteredHistory.length === 0 ? (
+                        <p className="p-6 text-center text-gray-500 dark:text-gray-400">No transactions found for the current filter.</p>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                                <thead className="bg-gray-50 dark:bg-gray-700/50 sticky top-0">
+                                    <tr>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">User</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Description</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Collab ID</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Type</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Amount</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Transaction ID</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
+                                </thead>
+                                <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                    {filteredHistory.map((item, index) => (
+                                        <tr key={`${item.transactionId}-${index}`}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{item.date?.toLocaleString() || 'Invalid Date'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="flex items-center">
+                                                    <img className="h-8 w-8 rounded-full" src={item.userAvatar} alt={item.userName} />
+                                                    <div className="ml-3">
+                                                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{item.userName}</div>
+                                                        {item.userPiNumber && <div className="text-xs text-gray-400 font-mono">{item.userPiNumber}</div>}
+                                                        <div className="text-xs text-gray-500 dark:text-gray-400 capitalize">{item.userRole}</div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100 max-w-xs truncate">{item.description}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono dark:text-gray-400">{item.collabId || 'N/A'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                                <span className={`font-semibold ${item.type === 'Payment Made' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}>{item.type}</span>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100 font-semibold">
+                                                {item.type === 'Payment Made' ? '-' : '+'} ₹{(item.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap"><StatusBadge status={item.status} /></td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400 font-mono max-w-[100px] truncate">{item.transactionId}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );

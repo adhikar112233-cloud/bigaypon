@@ -17,7 +17,7 @@ interface MyAdBookingsPageProps {
 }
 
 const RequestStatusBadge: React.FC<{ status: AdBookingStatus }> = ({ status }) => {
-    const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize";
+    const baseClasses = "px-3 py-1 text-xs font-medium rounded-full capitalize whitespace-nowrap";
     const statusMap: Record<AdBookingStatus, { text: string; classes: string }> = {
         pending_approval: { text: "Pending Approval", classes: "text-yellow-800 bg-yellow-100" },
         rejected: { text: "Rejected", classes: "text-red-800 bg-red-100" },
@@ -29,6 +29,7 @@ const RequestStatusBadge: React.FC<{ status: AdBookingStatus }> = ({ status }) =
         completed: { text: "Completed", classes: "text-gray-800 bg-gray-100" },
         disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100" },
         brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100" },
+        refund_pending_admin_review: { text: "Refund Under Review", classes: "text-blue-800 bg-blue-100" },
     };
     const { text, classes } = statusMap[status] || { text: status.replace(/_/g, ' '), classes: "text-gray-800 bg-gray-100" };
     return <span className={`${baseClasses} ${classes}`}>{text}</span>;
@@ -60,6 +61,8 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
     const [disputingRequest, setDisputingRequest] = useState<AdRequest | null>(null);
     const [modal, setModal] = useState<'offer' | 'dispute' | null>(null);
     const [selectedRequest, setSelectedRequest] = useState<AdRequest | null>(null);
+    const [confirmAction, setConfirmAction] = useState<{req: AdRequest, action: 'approve_payment'} | null>(null);
+
 
     const fetchRequests = async () => {
         setIsLoading(true);
@@ -72,7 +75,12 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
                 ...tvRequests.map(r => ({...r, type: 'Live TV' as const})),
                 ...bannerRequests.map(r => ({...r, type: 'Banner Ad' as const}))
             ];
-            combined.sort((a, b) => ((b.timestamp as Timestamp)?.toMillis() || 0) - ((a.timestamp as Timestamp)?.toMillis() || 0));
+            // FIX: Use a safe method to sort by timestamp to avoid runtime errors with serialized objects.
+            combined.sort((a, b) => {
+                const timeB = (b.timestamp && typeof b.timestamp.toMillis === 'function') ? b.timestamp.toMillis() : 0;
+                const timeA = (a.timestamp && typeof a.timestamp.toMillis === 'function') ? a.timestamp.toMillis() : 0;
+                return timeB - timeA;
+            });
             setRequests(combined);
         } catch (err) {
             console.error(err);
@@ -87,16 +95,15 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
     }, [user.id]);
 
     const handleUpdate = async (req: AdRequest, data: Partial<AdSlotRequest | BannerAdBookingRequest>) => {
-        setRequests(prev => prev.map(r => r.id === req.id ? { ...r, ...data } : r));
         try {
             if (req.type === 'Live TV') {
-                await apiService.updateAdSlotRequest(req.id, data);
+                await apiService.updateAdSlotRequest(req.id, data, user.id);
             } else {
-                await apiService.updateBannerAdBookingRequest(req.id, data);
+                await apiService.updateBannerAdBookingRequest(req.id, data, user.id);
             }
+            fetchRequests(); // Refetch on success
         } catch (e) {
             console.error("Failed to update ad booking:", e);
-            fetchRequests(); // Revert on error
         } finally {
             setModal(null);
             setSelectedRequest(null);
@@ -133,14 +140,19 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
                 setDisputingRequest(req);
                 break;
             case 'brand_complete_disputed':
-                const collabType = req.type === 'Live TV' ? 'ad_slot' : 'banner_booking';
-                apiService.brandCompletesDisputedWork(req.id, collabType);
-                handleUpdate(req, { status: 'completed' });
+                setConfirmAction({ req, action: 'approve_payment' });
                 break;
             case 'brand_request_refund':
                 onInitiateRefund(req);
                 break;
         }
+    };
+
+    const executeConfirmAction = () => {
+        if (!confirmAction) return;
+        const { req } = confirmAction;
+        handleUpdate(req, { status: 'completed' });
+        setConfirmAction(null);
     };
 
     const handlePaymentSuccess = () => {
@@ -158,7 +170,8 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
             case 'in_progress': info = "Work is currently in progress."; break;
             case 'completed': info = `Collaboration complete. Payment status: ${req.paymentStatus || 'pending'}`; break;
             case 'rejected': info = req.rejectionReason ? `Rejected: ${req.rejectionReason}` : `Request Rejected`; break;
-            case 'brand_decision_pending': info = `Admin has ruled in your favor. Please decide if the work can be marked as complete (to pay the agency) or if you want a refund.`; break;
+            case 'brand_decision_pending': info = `Admin has ruled in your favor. Please decide if the work can be marked as complete (to release payment) or if you want a refund.`; break;
+            case 'refund_pending_admin_review': info = `Your refund request is under review. A BIGYAPON agent will process it within 48 hours.`; break;
         }
         if (!info) return null;
         return <div className="mt-4 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">{info}</div>;
@@ -183,8 +196,8 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
                 actions.push({ label: 'Dispute/Incomplete', action: 'work_incomplete', style: 'bg-orange-500 text-white' });
                 break;
             case 'brand_decision_pending':
-                actions.push({ label: 'Get Refund', action: 'brand_request_refund', style: 'bg-red-500 text-white' });
-                actions.push({ label: 'Work is Complete', action: 'brand_complete_disputed', style: 'bg-green-500 text-white' });
+                actions.push({ label: 'Request Full Refund', action: 'brand_request_refund', style: 'bg-red-500 text-white' });
+                actions.push({ label: 'Approve Payment', action: 'brand_complete_disputed', style: 'bg-green-500 text-white' });
                 break;
         }
         
@@ -220,6 +233,7 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
                                         {req.type}
                                     </span>
                                     <h3 className="text-lg font-bold text-gray-800 mt-1">{req.campaignName}</h3>
+                                    {req.collabId && <p className="text-xs font-mono text-gray-400 mt-1">{req.collabId}</p>}
                                     <p className="text-sm text-gray-500">
                                         {req.type === 'Live TV' ? (req as AdSlotRequest).adType : (req as BannerAdBookingRequest).bannerAdLocation}
                                     </p>
@@ -248,6 +262,7 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
                         userId: user.id,
                         description: `Payment for ${payingRequest.type}: ${payingRequest.campaignName}`,
                         relatedId: payingRequest.id,
+                        collabId: payingRequest.collabId,
                     }}
                 />
             )}
@@ -261,6 +276,18 @@ const MyAdBookingsPage: React.FC<MyAdBookingsPageProps> = ({ user, platformSetti
                         fetchRequests();
                     }}
                 />
+            )}
+            {confirmAction && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+                        <h3 className="text-lg font-bold dark:text-gray-100">Confirm Action</h3>
+                        <p className="text-gray-600 dark:text-gray-300 my-4">Are you sure you want to approve this work? This will mark the collaboration as complete and release the final payment to the agency/channel.</p>
+                        <div className="flex justify-end space-x-2">
+                            <button onClick={() => setConfirmAction(null)} className="px-4 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-600 dark:text-gray-200">Cancel</button>
+                            <button onClick={executeConfirmAction} className="px-4 py-2 text-sm rounded-md bg-green-600 text-white">Confirm &amp; Approve</button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

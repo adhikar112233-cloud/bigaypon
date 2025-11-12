@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { User, AnyCollaboration, RefundRequest } from '../types';
+import { User, AnyCollaboration, RefundRequest, AdSlotRequest, BannerAdBookingRequest } from '../types';
 import { apiService } from '../services/apiService';
 
 interface RefundRequestPageProps {
@@ -24,6 +24,20 @@ const RefundRequestPage: React.FC<RefundRequestPageProps> = ({ user, collaborati
         throw new Error('Could not determine collaboration type');
     };
 
+    // Fix: Add getPartnerDetails function to resolve 'Cannot find name' error.
+    const getPartnerDetails = () => {
+        if ('influencerId' in collaboration) { // Direct or Campaign
+            return { id: collaboration.influencerId, name: collaboration.influencerName, avatar: collaboration.influencerAvatar };
+        }
+        if ('liveTvId' in collaboration) { // Ad Slot
+            return { id: collaboration.liveTvId, name: (collaboration as AdSlotRequest).liveTvName, avatar: (collaboration as AdSlotRequest).liveTvAvatar };
+        }
+        if ('agencyId' in collaboration) { // Banner Ad
+            return { id: collaboration.agencyId, name: (collaboration as BannerAdBookingRequest).agencyName, avatar: (collaboration as BannerAdBookingRequest).agencyAvatar };
+        }
+        return { id: '', name: 'Unknown Partner', avatar: '' };
+    };
+
     const collaborationTitle = useMemo(() => {
         if ('title' in collaboration) return collaboration.title;
         if ('campaignTitle' in collaboration) return collaboration.campaignTitle;
@@ -46,7 +60,8 @@ const RefundRequestPage: React.FC<RefundRequestPageProps> = ({ user, collaborati
         setIsLoading(true);
         try {
             await apiService.createRefundRequest({
-                collabId: collaboration.id,
+                // FIX: Changed property 'collabId' to 'collaborationId' to pass the document ID.
+                collaborationId: collaboration.id,
                 collabType: getCollaborationType(),
                 collabTitle: collaborationTitle,
                 brandId: user.id,
@@ -56,6 +71,8 @@ const RefundRequestPage: React.FC<RefundRequestPageProps> = ({ user, collaborati
                 bankDetails,
                 panNumber,
                 description,
+                // FIX: Replaced non-existent 'trackingId' with 'collabId' to pass the user-facing ID.
+                collabId: collaboration.collabId,
             });
             onSubmitted();
         } catch (err) {
@@ -65,6 +82,8 @@ const RefundRequestPage: React.FC<RefundRequestPageProps> = ({ user, collaborati
             setIsLoading(false);
         }
     };
+
+    const partner = getPartnerDetails();
 
     return (
         <div className="max-w-4xl mx-auto">
@@ -79,6 +98,7 @@ const RefundRequestPage: React.FC<RefundRequestPageProps> = ({ user, collaborati
                  <div className="bg-gray-50 p-4 rounded-lg border">
                     <p><span className="font-semibold">Collaboration:</span> {collaborationTitle}</p>
                     <p><span className="font-semibold">Refund Amount:</span> ₹{finalAmount.toFixed(2)}</p>
+                    {collaboration.collabId && <p><span className="font-semibold">Collab ID:</span> <span className="font-mono">{collaboration.collabId}</span></p>}
                 </div>
                 
                 <div>

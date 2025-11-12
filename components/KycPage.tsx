@@ -20,6 +20,7 @@ const KycPage: React.FC<KycPageProps> = ({ user, onKycSubmitted, isResubmit = fa
     const [selfieDataUrl, setSelfieDataUrl] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [success, setSuccess] = useState<string | null>(null);
     const idProofRef = useRef<HTMLInputElement>(null);
     const [isPopupOpen, setIsPopupOpen] = useState(false);
 
@@ -51,27 +52,48 @@ const KycPage: React.FC<KycPageProps> = ({ user, onKycSubmitted, isResubmit = fa
 
     const handleManualSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (platformSettings.isKycIdProofRequired && !idProofFile) {
+        setError(null);
+        setSuccess(null);
+
+        if (platformSettings.isKycIdProofRequired && !idProofFile && !user.kycDetails?.idProofUrl) {
             setError("ID proof is required.");
             return;
         }
-        if (platformSettings.isKycSelfieRequired && !selfieDataUrl) {
+        if (platformSettings.isKycSelfieRequired && !selfieDataUrl && !user.kycDetails?.selfieUrl) {
             setError("A live selfie is required.");
             return;
         }
 
         setIsLoading(true);
-        setError(null);
         try {
             const selfieFile = selfieDataUrl ? dataURLtoFile(selfieDataUrl, 'selfie.jpg') : null;
             await apiService.submitKyc(user.id, formData, idProofFile, selfieFile);
-            alert("KYC details submitted for review. You can now use the app.");
-            onKycSubmitted();
-        } catch (err) {
+            
+            setSuccess("KYC details submitted successfully! You can now use the app.");
+            
+            setTimeout(() => {
+                onKycSubmitted();
+            }, 2000);
+
+        } catch (err: any) {
             console.error(err);
-            setError("Failed to submit KYC. Please try again.");
-        } finally {
-            setIsLoading(false);
+            let errorMessage = "Failed to submit KYC. Please try again. Check your network or file size.";
+            if (err.code) { // Check if it's a Firebase error
+                switch(err.code) {
+                    case 'storage/unauthorized':
+                        errorMessage = "Storage permission error. Please check your Firebase Storage security rules.";
+                        break;
+                    case 'storage/object-not-found':
+                    case 'storage/bucket-not-found':
+                         errorMessage = "Firebase Storage bucket not found. Please ensure Storage is enabled for your project in the Firebase Console.";
+                        break;
+                    case 'storage/canceled':
+                        errorMessage = "File upload was canceled. Please try again.";
+                        break;
+                }
+            }
+            setError(errorMessage);
+            setIsLoading(false); // Stop loading ONLY on error
         }
     };
     
@@ -97,6 +119,7 @@ const KycPage: React.FC<KycPageProps> = ({ user, onKycSubmitted, isResubmit = fa
 
                 setTimeout(async () => {
                     try {
+                        // FIX: Property 'submitDigilockerKyc' does not exist on type '{...}'.
                         await apiService.submitDigilockerKyc(user.id);
                         alert("KYC verified successfully with DigiLocker!");
                         onKycSubmitted();
@@ -180,7 +203,7 @@ const KycPage: React.FC<KycPageProps> = ({ user, onKycSubmitted, isResubmit = fa
                 {platformSettings.isKycIdProofRequired && (
                     <div>
                         <label className="block text-sm font-medium dark:text-gray-300">ID Proof (Aadhaar/PAN/Voter/Passport)</label>
-                        <input type="file" ref={idProofRef} onChange={handleFileChange} accept="image/png, image/jpeg, application/pdf" required={platformSettings.isKycIdProofRequired} className="mt-1 block w-full text-sm text-gray-500 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 dark:file:bg-indigo-900/50 file:text-indigo-700 dark:file:text-indigo-300 hover:file:bg-indigo-100 dark:hover:file:bg-indigo-900"/>
+                        <input type="file" ref={idProofRef} onChange={handleFileChange} accept="image/png, image/jpeg, application/pdf" required={platformSettings.isKycIdProofRequired && !user.kycDetails?.idProofUrl} className="mt-1 block w-full text-sm text-gray-500 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 dark:file:bg-indigo-900/50 file:text-indigo-700 dark:file:text-indigo-300 hover:file:bg-indigo-100 dark:hover:file:bg-indigo-900"/>
                     </div>
                 )}
                 {platformSettings.isKycSelfieRequired && (
@@ -195,11 +218,14 @@ const KycPage: React.FC<KycPageProps> = ({ user, onKycSubmitted, isResubmit = fa
                 )}
             </div>
             
-             {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+            <div className="h-6 text-center">
+                {error && <p className="text-red-500 text-sm">{error}</p>}
+                {success && <p className="text-green-500 text-sm">{success}</p>}
+            </div>
 
              <div className="flex items-center justify-between pt-4">
                 <button type="button" onClick={() => setMode('options')} className="text-sm font-medium text-indigo-600 dark:text-indigo-400">Back to options</button>
-                <button type="submit" disabled={isLoading} className="py-2 px-6 font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+                <button type="submit" disabled={isLoading || !!success} className="py-2 px-6 font-semibold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
                     {isLoading ? 'Submitting...' : 'Submit for Verification'}
                 </button>
              </div>

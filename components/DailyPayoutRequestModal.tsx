@@ -114,6 +114,7 @@ const DailyPayoutRequestModal: React.FC<DailyPayoutRequestModalProps> = ({ user,
                 userName: user.name,
                 userRole: user.role,
                 collaborationId: selectedCollabId,
+                collabId: collab.collabId,
                 collaborationType: user.role === 'livetv' ? 'ad_slot' : 'banner_booking',
             };
 
@@ -132,76 +133,100 @@ const DailyPayoutRequestModal: React.FC<DailyPayoutRequestModalProps> = ({ user,
         }
     };
     
-    const script = `Hi BIGYAPON, I am ${user.name}, I am requesting a payout. Please send me payment in my account as per my profile.`;
+    const script = `Hi BIGYAPON, I am ${user.name}, I am showing proof of my active campaign for a daily payout request.`;
 
-    const renderContent = () => {
-        if (isLoading && step === 1) return <p className="dark:text-gray-300">Loading...</p>;
-        if (error) return <p className="text-red-500">{error}</p>;
-        if (activeCollabs.length === 0 && !isLoading) return <p className="dark:text-gray-300">You have no active collaborations eligible for a daily payout.</p>;
-
-        if (step === 3) {
-            return (
-                <div className="text-center">
-                    <h3 className="text-xl font-bold text-green-500">Request Submitted!</h3>
-                    <p className="dark:text-gray-300">Your request is now under review by the admin team.</p>
-                </div>
-            );
+    const handleNextStep = () => {
+        if (!selectedCollabId) {
+            setError("Please select a collaboration.");
+            return;
         }
-        
-        if (step === 2) {
-            return (
-                <div className="space-y-4">
-                    <p className="text-sm bg-gray-100 dark:bg-gray-700 dark:text-gray-300 p-3 rounded-lg text-center">Please say the following script clearly in your video:</p>
-                    <p className="font-mono text-center text-indigo-600 dark:text-indigo-400">"{script}"</p>
-                    <div className="bg-black rounded-lg overflow-hidden aspect-video">
-                        <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-                    </div>
-                    {videoBlob && !isRecording && (
-                        <div className="flex justify-center gap-4">
-                            <button onClick={startRecording} className="px-4 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-600 dark:text-gray-200">Retake</button>
-                            <button onClick={() => handleSubmit(videoBlob)} disabled={isLoading} className="px-6 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg disabled:opacity-50">
-                                {isLoading ? 'Submitting...' : 'Submit Video'}
-                            </button>
-                        </div>
-                    )}
-                    {!videoBlob && (
-                         <button onClick={isRecording ? stopRecording : startRecording} className={`w-full py-2 text-white font-semibold rounded-lg ${isRecording ? 'bg-red-500' : 'bg-blue-500'}`}>
-                            {isRecording ? 'Stop Recording' : 'Start Recording'}
-                        </button>
-                    )}
-                </div>
-            );
+        if (platformSettings.payoutSettings.requireLiveVideoForDailyPayout) {
+            setStep(2);
+        } else {
+            handleSubmit(null);
         }
+    };
 
+    if (isLoading && step !== 1) {
         return (
-            <div className="space-y-4">
-                <div>
-                    <label htmlFor="collab-select" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Select Active Collaboration</label>
-                    <select id="collab-select" value={selectedCollabId} onChange={e => setSelectedCollabId(e.target.value)} className="mt-1 block w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
-                        {activeCollabs.map(c => <option key={c.id} value={c.id}>{c.campaignName}</option>)}
-                    </select>
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+                <div className="bg-white p-8 rounded-lg text-center">
+                    <div className="w-12 h-12 border-4 border-dashed rounded-full animate-spin border-indigo-500 mx-auto"></div>
+                    <p className="mt-4">Submitting request...</p>
                 </div>
-                {platformSettings.payoutSettings.requireLiveVideoForDailyPayout ? (
-                    <button onClick={() => setStep(2)} className="w-full py-2 text-white font-semibold bg-indigo-600 rounded-lg">
-                        Next: Record Verification Video
-                    </button>
-                ) : (
-                    <button onClick={() => handleSubmit(null)} disabled={isLoading} className="w-full py-2 text-white font-semibold bg-indigo-600 rounded-lg disabled:opacity-50">
-                        {isLoading ? 'Submitting...' : 'Submit Request'}
-                    </button>
-                )}
             </div>
         );
-    };
+    }
 
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
-            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 w-full max-w-md relative">
-                 <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 dark:text-gray-300 dark:hover:text-gray-100">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                </button>
-                <h2 className="text-xl font-bold text-center text-gray-800 dark:text-gray-100 mb-6">Daily Payout Request</h2>
-                {renderContent()}
+            <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-2xl relative">
+                <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600">&times;</button>
+                {step === 1 && (
+                    <div>
+                        <h2 className="text-2xl font-bold text-center mb-4">Daily Payout Request</h2>
+                        {isLoading ? <p>Loading active collaborations...</p> : activeCollabs.length === 0 ? (
+                            <p className="text-center text-gray-600">You have no active collaborations eligible for daily payout.</p>
+                        ) : (
+                            <div className="space-y-4">
+                                <div>
+                                    <label htmlFor="collab-select" className="block text-sm font-medium text-gray-700">Select Collaboration</label>
+                                    <select
+                                        id="collab-select"
+                                        value={selectedCollabId}
+                                        onChange={(e) => setSelectedCollabId(e.target.value)}
+                                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                                    >
+                                        {activeCollabs.map(collab => (
+                                            <option key={collab.id} value={collab.id}>
+                                                {collab.campaignName}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                {error && <p className="text-red-500 text-sm">{error}</p>}
+                                <button
+                                    onClick={handleNextStep}
+                                    className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                                >
+                                    {platformSettings.payoutSettings.requireLiveVideoForDailyPayout ? 'Next: Record Proof' : 'Submit Request'}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
+                {step === 2 && (
+                    <div>
+                        <h2 className="text-2xl font-bold text-center mb-4">Record Proof of Work</h2>
+                        <div className="p-4 bg-yellow-50 text-yellow-800 rounded-lg text-sm mb-4">
+                            <p className="font-semibold">Please read the following script clearly while recording:</p>
+                            <p className="mt-2 italic">"{script}"</p>
+                        </div>
+                        
+                        {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+                        
+                        <div className="bg-black rounded-lg overflow-hidden aspect-video mb-4">
+                            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                        </div>
+
+                        {videoBlob ? (
+                            <div className="flex justify-center gap-4">
+                                <button onClick={() => { setVideoBlob(null); startRecording(); }} className="py-2 px-4 rounded-md text-sm font-medium bg-gray-200 hover:bg-gray-300">Retake</button>
+                                <button onClick={() => handleSubmit(videoBlob)} className="py-2 px-4 rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-700">Submit</button>
+                            </div>
+                        ) : isRecording ? (
+                            <button onClick={stopRecording} className="w-full py-2 px-4 rounded-md text-sm font-medium text-white bg-red-600 hover:bg-red-700">Stop Recording</button>
+                        ) : (
+                            <button onClick={startRecording} className="w-full py-2 px-4 rounded-md text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700">Start Recording</button>
+                        )}
+                    </div>
+                )}
+                {step === 3 && (
+                     <div className="text-center py-8">
+                        <h2 className="text-2xl font-bold text-green-500">Request Submitted!</h2>
+                        <p className="text-gray-600 mt-2">Your daily payout request is under review. You will be notified of the status shortly.</p>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -27,6 +27,7 @@ const ApplicationStatusBadge: React.FC<{ status: CampaignApplicationStatus }> = 
         completed: { text: "Completed", classes: "text-gray-800 bg-gray-100" },
         disputed: { text: "Dispute in Review", classes: "text-orange-800 bg-orange-100" },
         brand_decision_pending: { text: "Decision Pending", classes: "text-gray-800 bg-gray-100" },
+        refund_pending_admin_review: { text: "Refund Under Review", classes: "text-blue-800 bg-blue-100" },
     };
     const { text, classes } = statusMap[status] || { text: status.replace(/_/g, ' '), classes: "text-gray-800 bg-gray-100" };
     return <span className={`${baseClasses} ${classes}`}>{text}</span>;
@@ -44,6 +45,7 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
     const [boostingCampaign, setBoostingCampaign] = useState<Campaign | null>(null);
     const [isOfferModalOpen, setIsOfferModalOpen] = useState(false);
     const [selectedAppForOffer, setSelectedAppForOffer] = useState<CampaignApplication | null>(null);
+    const [confirmAction, setConfirmAction] = useState<{app: CampaignApplication, action: 'approve_payment'} | null>(null);
 
     const OfferModal: React.FC<{ app: CampaignApplication; onClose: () => void; onConfirm: (amount: string) => void; }> = ({ app, onClose, onConfirm }) => {
         const [amount, setAmount] = useState('');
@@ -70,7 +72,8 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
         onInitiatePayment: (app: CampaignApplication) => void;
         onStartDispute: (app: CampaignApplication) => void;
         onInitiateRefund: (app: CampaignApplication) => void;
-    }> = ({ app, platformSettings, onUpdate, onStartChat, onInitiatePayment, onStartDispute, onInitiateRefund }) => {
+        onApprovePayment: (app: CampaignApplication) => void;
+    }> = ({ app, platformSettings, onUpdate, onStartChat, onInitiatePayment, onStartDispute, onInitiateRefund, onApprovePayment }) => {
         
         const handleAction = (action: 'accept' | 'reject' | 'counter' | 'pay' | 'complete' | 'dispute' | 'brand_complete_disputed' | 'brand_request_refund') => {
             switch (action) {
@@ -95,8 +98,7 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                     onStartDispute(app);
                     break;
                 case 'brand_complete_disputed':
-                    apiService.brandCompletesDisputedWork(app.id, 'campaign');
-                    onUpdate(app.id, { status: 'completed' });
+                    onApprovePayment(app);
                     break;
                 case 'brand_request_refund':
                     onInitiateRefund(app);
@@ -120,9 +122,18 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                  buttons.push(<button key="comp" onClick={() => handleAction('complete')} className="px-3 py-1 text-xs font-medium text-white bg-green-500 hover:bg-green-600 rounded-md">Work Complete</button>);
             }
              if (app.status === 'brand_decision_pending') {
-                buttons.push(<button key="refund" onClick={() => handleAction('brand_request_refund')} className="px-3 py-1 text-xs font-medium text-white bg-red-500 hover:bg-red-600 rounded-md">Get Refund</button>);
-                buttons.push(<button key="brand_complete" onClick={() => handleAction('brand_complete_disputed')} className="px-3 py-1 text-xs font-medium text-white bg-green-500 hover:bg-green-600 rounded-md">Work is Complete</button>);
+                buttons.push(<button key="refund" onClick={() => handleAction('brand_request_refund')} className="px-3 py-1 text-xs font-medium text-white bg-red-500 hover:bg-red-600 rounded-md">Request Full Refund</button>);
+                buttons.push(<button key="brand_complete" onClick={() => handleAction('brand_complete_disputed')} className="px-3 py-1 text-xs font-medium text-white bg-green-500 hover:bg-green-600 rounded-md">Approve Payment</button>);
             }
+
+            if (app.status === 'refund_pending_admin_review') {
+                return (
+                    <div className="mt-3 p-3 bg-blue-50 text-blue-800 text-sm rounded-lg">
+                        Your refund request has been submitted. A BIGYAPON agent will review it and process the action within 48 hours.
+                    </div>
+                );
+            }
+
             return <div className="mt-3 flex flex-wrap gap-2">{buttons}</div>;
         };
         
@@ -135,6 +146,7 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                             <p className="font-semibold text-gray-800">{app.influencerName}</p>
                             <ApplicationStatusBadge status={app.status} />
                         </div>
+                        {app.collabId && <p className="text-xs font-mono text-gray-400 mt-1">{app.collabId}</p>}
                         {app.currentOffer && <p className="text-sm font-semibold text-indigo-600">Offer: {app.currentOffer.amount}</p>}
                         <p className="text-sm text-gray-600 mt-1 italic">"{app.message}"</p>
                         {renderActions()}
@@ -170,7 +182,6 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
     }, [user.id]);
     
     const handleUpdateApplication = async (appId: string, data: Partial<CampaignApplication>) => {
-        // Optimistic UI update
         const updatedApps = { ...applications };
         for (const campaignId in updatedApps) {
             const appIndex = updatedApps[campaignId].findIndex(app => app.id === appId);
@@ -180,10 +191,7 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                 break;
             }
         }
-        // API call
-        await apiService.updateCampaignApplication(appId, data);
-        // Optional: refetch for consistency, but optimistic is faster
-        // fetchCampaignsAndApplications(); 
+        await apiService.updateCampaignApplication(appId, data, user.id);
     };
 
     const handlePaymentSuccess = () => {
@@ -192,6 +200,14 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
         }
         setPayingApplication(null);
     };
+
+    const executeConfirmAction = () => {
+        if (!confirmAction) return;
+        const { app } = confirmAction;
+        handleUpdateApplication(app.id, { status: 'completed' });
+        setConfirmAction(null);
+    };
+
 
     if (isLoading) return <div className="text-center p-8">Loading campaigns...</div>;
 
@@ -235,7 +251,7 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                                         {applications[campaign.id]?.length > 0 ? (
                                             <ul className="space-y-3">
                                                 {applications[campaign.id].map(app => (
-                                                <ApplicantCard key={app.id} app={app} onUpdate={handleUpdateApplication} onStartChat={onStartChat} platformSettings={platformSettings} onInitiatePayment={setPayingApplication} onStartDispute={setDisputingApplication} onInitiateRefund={onInitiateRefund} />
+                                                <ApplicantCard key={app.id} app={app} onUpdate={handleUpdateApplication} onStartChat={onStartChat} platformSettings={platformSettings} onInitiatePayment={setPayingApplication} onStartDispute={setDisputingApplication} onInitiateRefund={onInitiateRefund} onApprovePayment={(app) => setConfirmAction({app, action: 'approve_payment'})} />
                                                 ))}
                                             </ul>
                                         ) : (
@@ -277,6 +293,7 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                         userId: user.id,
                         description: `Payment for campaign: ${payingApplication.campaignTitle}`,
                         relatedId: payingApplication.id,
+                        collabId: payingApplication.collabId,
                     }}
                 />
             )}
@@ -322,6 +339,19 @@ const CampaignsPage: React.FC<CampaignsPageProps> = ({ user, platformSettings, o
                         setSelectedAppForOffer(null);
                     }}
                 />
+            )}
+
+            {confirmAction && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+                        <h3 className="text-lg font-bold dark:text-gray-100">Confirm Action</h3>
+                        <p className="text-gray-600 dark:text-gray-300 my-4">Are you sure you want to approve this work? This will mark the collaboration as complete and release the final payment to the influencer.</p>
+                        <div className="flex justify-end space-x-2">
+                            <button onClick={() => setConfirmAction(null)} className="px-4 py-2 text-sm rounded-md bg-gray-200 dark:bg-gray-600 dark:text-gray-200">Cancel</button>
+                            <button onClick={executeConfirmAction} className="px-4 py-2 text-sm rounded-md bg-green-600 text-white">Confirm &amp; Approve</button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

@@ -1,4 +1,6 @@
 
+import { Timestamp } from 'firebase/firestore';
+
 // Fix: Define application-wide types to resolve import errors across multiple components and services.
 export type UserRole = 'brand' | 'influencer' | 'livetv' | 'banneragency' | 'staff';
 
@@ -50,6 +52,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  piNumber?: string;
   mobileNumber?: string;
   companyName?: string;
   role: UserRole;
@@ -62,6 +65,9 @@ export interface User {
   msmeRegistrationNumber?: string;
   fcmToken?: string; // For push notifications
   staffPermissions?: StaffPermission[];
+  notificationPreferences?: {
+    enabled: boolean;
+  };
 }
 
 export interface Influencer {
@@ -76,6 +82,7 @@ export interface Influencer {
   socialMediaLinks?: string;
   location?: string;
   isBoosted?: boolean;
+  membershipActive?: boolean;
 }
 
 export interface Attachment {
@@ -104,7 +111,8 @@ export type CollabRequestStatus =
   | 'work_submitted'    // Influencer marked work as complete
   | 'completed'         // Brand marked work as complete
   | 'disputed'         // Brand marked work as incomplete
-  | 'brand_decision_pending'; // Admin ruled for brand, brand must decide to complete or refund
+  | 'brand_decision_pending' // Admin ruled for brand, brand must decide to complete or refund
+  | 'refund_pending_admin_review'; // Brand has requested a refund, awaiting admin action
 
 export interface CollaborationRequest {
   id: string;
@@ -134,6 +142,7 @@ export interface CollaborationRequest {
   finalAmount?: string;
   paymentStatus?: 'paid' | 'payout_requested' | 'payout_complete';
   workStatus?: 'started';
+  collabId?: string;
 }
 
 export interface Campaign {
@@ -164,7 +173,8 @@ export type CampaignApplicationStatus =
   | 'work_submitted'       // Influencer marked work as complete
   | 'completed'            // Brand marked work as complete
   | 'disputed'            // Brand marked work as incomplete
-  | 'brand_decision_pending'; // Admin ruled for brand, brand must decide to complete or refund
+  | 'brand_decision_pending' // Admin ruled for brand, brand must decide to complete or refund
+  | 'refund_pending_admin_review'; // Brand has requested a refund, awaiting admin action
 
 export interface CampaignApplication {
   id: string;
@@ -194,6 +204,7 @@ export interface CampaignApplication {
   finalAmount?: string;
   paymentStatus?: 'paid' | 'payout_requested' | 'payout_complete';
   workStatus?: 'started';
+  collabId?: string;
 }
 
 
@@ -238,6 +249,11 @@ export interface Boost {
   createdAt: any; // Firestore Timestamp
   targetId: string;
   targetType: 'profile' | 'campaign';
+}
+
+export interface DiscountSetting {
+  isEnabled: boolean;
+  percentage: number;
 }
 
 export interface PlatformSettings {
@@ -286,6 +302,12 @@ export interface PlatformSettings {
   isCampaignBoostingEnabled: boolean;
   boostPrices: Record<BoostDuration, number>;
   liveHelpStaffId: string;
+  discountSettings: {
+    creatorProfileBoost: DiscountSetting;
+    brandMembership: DiscountSetting;
+    creatorMembership: DiscountSetting;
+    brandCampaignBoost: DiscountSetting;
+  };
 }
 
 export interface ProfileData {
@@ -337,7 +359,8 @@ export type AdBookingStatus =
   | 'work_submitted'
   | 'completed'
   | 'disputed'
-  | 'brand_decision_pending'; // Admin ruled for brand, brand must decide to complete or refund
+  | 'brand_decision_pending' // Admin ruled for brand, brand must decide to complete or refund
+  | 'refund_pending_admin_review'; // Brand has requested a refund, awaiting admin action
 
 interface AdBookingBase {
   brandId: string;
@@ -364,6 +387,7 @@ interface AdBookingBase {
   paymentStatus?: 'paid' | 'payout_requested' | 'payout_complete';
   workStatus?: 'started';
   dailyPayoutsReceived?: number;
+  collabId?: string;
 }
 
 export interface AdSlotRequest extends AdBookingBase {
@@ -454,6 +478,7 @@ export interface PayoutRequest {
   rejectionReason?: string;
   timestamp: any;
   idProofSelfieUrl?: string;
+  collabId?: string;
 }
 
 export interface DailyPayoutRequest {
@@ -462,6 +487,7 @@ export interface DailyPayoutRequest {
   userName: string;
   userRole: UserRole;
   collaborationId: string;
+  collabId?: string;
   collaborationType: 'ad_slot' | 'banner_booking';
   videoUrl?: string;
   status: 'pending' | 'approved' | 'rejected' | 'on_hold' | 'processing';
@@ -512,6 +538,8 @@ export interface Dispute {
   reason: string;
   status: 'open' | 'resolved';
   timestamp: any; // Firestore Timestamp
+  amount?: number;
+  collabId?: string;
 }
 
 export interface Transaction {
@@ -520,6 +548,7 @@ export interface Transaction {
   type: 'payment';
   description: string;
   relatedId: string;
+  collabId?: string;
   amount: number;
   status: 'completed' | 'pending' | 'failed';
   transactionId: string;
@@ -567,7 +596,8 @@ export interface LiveHelpMessage {
 
 export interface RefundRequest {
   id: string; // doc id
-  collabId: string;
+  // FIX: Renamed 'collabId' to 'collaborationId' to fix duplicate identifier error and align with other types.
+  collaborationId: string;
   collabType: 'direct' | 'campaign' | 'ad_slot' | 'banner_booking';
   collabTitle: string;
   brandId: string;
@@ -580,4 +610,23 @@ export interface RefundRequest {
   status: 'pending' | 'approved' | 'rejected' | 'on_hold' | 'processing';
   rejectionReason?: string;
   timestamp: any; // Firestore Timestamp
+  collabId?: string;
+}
+
+// Fix: Moved CombinedCollabItem from AdminPanel.tsx to types.ts to be shared across components.
+export interface CombinedCollabItem {
+  id: string;
+  type: 'Direct' | 'Campaign' | 'Live TV' | 'Banner Ad';
+  title: string;
+  customerName: string;
+  customerAvatar: string;
+  customerPiNumber?: string;
+  providerName: string;
+  providerAvatar: string;
+  providerPiNumber?: string;
+  date: Date | undefined;
+  status: CollabRequestStatus | CampaignApplicationStatus | AdBookingStatus;
+  paymentStatus: 'Paid' | 'Unpaid';
+  payoutStatus: 'N/A' | 'Requested' | 'Completed';
+  originalData: AnyCollaboration;
 }

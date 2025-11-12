@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Influencer } from '../types';
+import { User, Influencer, CollaborationRequest } from '../types';
 import { apiService } from '../services/apiService';
 import { generateCollabProposal } from '../services/geminiService';
 import { SparklesIcon } from './Icons';
@@ -40,7 +40,7 @@ const CollabRequestModal: React.FC<CollabRequestModalProps> = ({ user, influence
         setIsLoading(true);
         setError(null);
         try {
-            await apiService.sendCollabRequest({
+            const requestPayload: any = {
                 brandId: user.id,
                 influencerId: influencer.id,
                 brandName: user.companyName || user.name,
@@ -49,8 +49,11 @@ const CollabRequestModal: React.FC<CollabRequestModalProps> = ({ user, influence
                 influencerAvatar: influencer.avatar,
                 title,
                 message,
-                budget: budget ? `₹${budget}` : undefined,
-            });
+            };
+            if (budget) {
+                requestPayload.budget = `₹${budget}`;
+            }
+            await apiService.sendCollabRequest(requestPayload);
             setSuccess(true);
             setTimeout(onClose, 2000);
         } catch (err: any) {

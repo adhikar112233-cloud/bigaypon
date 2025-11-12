@@ -36,6 +36,7 @@ const AdminActionsFab: React.FC<AdminActionsFabProps> = ({ selectedUser, onSendR
                 <div className="absolute bottom-full mb-4 w-56 space-y-1">
                     <ActionButton icon={<EnvelopeIcon className="w-5 h-5 text-blue-500"/>} label="Send Reset Link" onClick={() => onSendReset(selectedUser)} />
                     <ActionButton icon={<KeyIcon className="w-5 h-5 text-gray-400"/>} label="View Password" onClick={() => {}} disabled={true} tooltip="For security, passwords are encrypted and cannot be viewed." />
+                    {/* FIX: Removed erroneous parentheses after the string 'Block User', which was causing a "not callable" error. */}
                     <ActionButton icon={selectedUser.isBlocked ? <LockOpenIcon className="w-5 h-5 text-green-500"/> : <LockClosedIcon className="w-5 h-5 text-yellow-500"/>} label={selectedUser.isBlocked ? 'Unblock User' : 'Block User'} onClick={() => onToggleBlock(selectedUser)} />
                 </div>
             )}

@@ -1,3 +1,5 @@
+
+
 import { User, UserRole, PlatformSettings, Membership } from '../types';
 import { auth, db } from './firebase';
 import { apiService } from './apiService';
@@ -16,9 +18,15 @@ import {
     updatePassword
 } from 'firebase/auth';
 // Fix: Corrected Firebase imports for 'doc', 'setDoc', 'getDoc', and 'Timestamp' to align with Firebase v9 modular syntax.
-import { doc, setDoc, getDoc, Timestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, Timestamp, updateDoc } from 'firebase/firestore';
 
 const DEFAULT_AVATAR_URL = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2NjYyI+PHBhdGggZD0iTTEyIDEyYzIuMjEgMCA0LTEuNzkgNC00cy0xLjc5LTQtNC00LTQgMS43OS00IDQgMS43OSA0IDQgNHptMCAyYy0yLjY3IDAtOCAxLjM0LTggNHYyaDRjMCAwIDAtMSAwLTJoMTJ2Mmg0di00YzAtMi42Ni01LjMzLTQtOC00eiIvPjwvc3ZnPg==';
+
+const generatePiNumber = (): string => {
+    // Generates a random 10-digit number
+    const randomNumber = Math.floor(1000000000 + Math.random() * 9000000000);
+    return `PI${randomNumber}`;
+};
 
 const getUserProfile = async (uid: string): Promise<Omit<User, 'id' | 'email'>> => {
     const userDocRef = doc(db, 'users', uid);
@@ -44,6 +52,7 @@ const getUserProfile = async (uid: string): Promise<Omit<User, 'id' | 'email'>> 
 
         return {
             name: data.name,
+            piNumber: data.piNumber,
             companyName: data.companyName,
             role: data.role,
             mobileNumber: data.mobileNumber,
@@ -85,6 +94,7 @@ export const authService = {
         const userProfileData: Partial<User> = {
             role,
             name,
+            piNumber: generatePiNumber(),
             companyName,
             email, // Storing email in profile for convenience
             mobileNumber,
@@ -117,6 +127,7 @@ export const authService = {
                 engagementRate: 0,
                 socialMediaLinks: '',
                 location: '',
+                membershipActive: false,
             };
             await setDoc(doc(db, 'influencers', firebaseUser.uid), influencerProfileData);
         }
@@ -149,11 +160,14 @@ export const authService = {
         // If the identifier doesn't look like an email, assume it's a mobile number
         if (!identifier.includes('@')) {
             const userProfile = await apiService.getUserByMobile(identifier);
-            if (!userProfile || !userProfile.email) {
-                // Use a generic error to prevent user enumeration
-                throw new Error('Authentication failed. Please check your credentials.');
+            if (userProfile && userProfile.email) {
+                emailToLogin = userProfile.email;
+            } else {
+                // If mobile number not found, use a non-existent email to trigger
+                // a standard 'auth/invalid-credential' error from Firebase.
+                // This provides a consistent error experience on the frontend.
+                emailToLogin = `invalid-user-${Date.now()}@bigyapon.com`;
             }
-            emailToLogin = userProfile.email;
         }
 
         const userCredential = await signInWithEmailAndPassword(auth, emailToLogin, password_input);
@@ -181,21 +195,27 @@ export const authService = {
         const userCredential = await confirmationResult.confirm(otp);
         const firebaseUser = userCredential.user;
         
-        const profile = await getUserProfile(firebaseUser.uid);
+        try {
+            const profile = await getUserProfile(firebaseUser.uid);
 
-        if (profile.isBlocked) {
+            if (profile.isBlocked) {
+                await signOut(auth);
+                throw new Error('Your account has been blocked by an administrator.');
+            }
+
+            // Phone auth users might not have an email, but our app structure needs one.
+            const email = firebaseUser.email || `${firebaseUser.phoneNumber}@collabzz.phone`;
+
+            return {
+                id: firebaseUser.uid,
+                email: email,
+                ...profile,
+            };
+        } catch (error) {
+            console.error("Failed to fetch user profile during OTP verification, logging out.", error);
             await signOut(auth);
-            throw new Error('Your account has been blocked by an administrator.');
+            throw error;
         }
-
-        // Phone auth users might not have an email, but our app structure needs one.
-        const email = firebaseUser.email || `${firebaseUser.phoneNumber}@collabzz.phone`;
-
-        return {
-            id: firebaseUser.uid,
-            email: email,
-            ...profile,
-        };
     },
 
     signInWithGoogle: async (role: UserRole): Promise<void> => {
@@ -229,6 +249,7 @@ export const authService = {
                 const newUserProfile = {
                     name: firebaseUser.displayName || 'New User',
                     email: firebaseUser.email!,
+                    piNumber: generatePiNumber(),
                     companyName: '', // User can fill this in later
                     mobileNumber: firebaseUser.phoneNumber || '',
                     role: role, // Use the role from the signup form
@@ -253,6 +274,7 @@ export const authService = {
                         engagementRate: 0,
                         socialMediaLinks: '',
                         location: '',
+                        membershipActive: false,
                     };
                     await setDoc(doc(db, 'influencers', firebaseUser.uid), influencerProfileData);
                 }
@@ -275,9 +297,8 @@ export const authService = {
                 const profile = userDoc.data();
                 if (profile.isBlocked) {
                     await signOut(auth);
-                    // We can't easily throw an error here that the UI will catch,
-                    // but onAuthChange will handle the final state.
-                    return; 
+                    // Throw an error to be caught by the UI and display a message.
+                    throw new Error('This account has been blocked by an administrator.');
                 }
             }
         } catch (error) {
@@ -331,6 +352,16 @@ export const authService = {
                         callback(null);
                         return;
                     }
+                    
+                    // Backfill PI Number for existing users
+                    if (!profile.piNumber) {
+                        profile.piNumber = generatePiNumber();
+                        const userDocRef = doc(db, 'users', firebaseUser.uid);
+                        // Asynchronously update the document in the background, don't wait for it
+                        updateDoc(userDocRef, { piNumber: profile.piNumber }).catch(err => {
+                            console.error("Failed to backfill PI number for user:", firebaseUser.uid, err);
+                        });
+                    }
 
                     callback({
                         id: firebaseUser.uid,
@@ -340,9 +371,12 @@ export const authService = {
                 } catch (error) {
                     console.error("Failed to fetch user profile, logging out.", error);
                      if (error instanceof Error && error.message.includes('User profile not found')) {
-                        console.log("User authenticated but profile does not exist after retries. This might indicate an incomplete signup.");
+                        console.log("User authenticated but profile does not exist after retries. This might indicate an incomplete signup or auth without profile.");
                      }
-                    await signOut(auth);
+                    // If we are not already signed out, do so.
+                    if (auth.currentUser) {
+                        await signOut(auth);
+                    }
                     callback(null);
                 }
             } else {

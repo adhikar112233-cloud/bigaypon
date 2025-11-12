@@ -1,7 +1,9 @@
-import React, { useState, useMemo, useCallback } from 'react';
-import { PayoutRequest, RefundRequest, DailyPayoutRequest, UserRole } from '../types';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { PayoutRequest, RefundRequest, DailyPayoutRequest, UserRole, CombinedCollabItem, User } from '../types';
 import { apiService } from '../services/apiService';
 import { Timestamp } from 'firebase/firestore';
+import { SparklesIcon } from './Icons';
+import * as geminiService from '../services/geminiService';
 
 interface PayoutQueueItem {
     id: string;
@@ -11,15 +13,17 @@ interface PayoutQueueItem {
     userName: string;
     userAvatar: string;
     userRole: UserRole;
+    userPiNumber?: string;
     brandName?: string;
     collabTitle: string;
-    collabId: string;
+    collaborationId: string;
     collabType: 'direct' | 'campaign' | 'ad_slot' | 'banner_booking';
     timestamp: any;
     bankDetails?: string;
     upiId?: string;
     panNumber?: string;
     description?: string;
+    collabId?: string;
     originalRequest: PayoutRequest | RefundRequest | DailyPayoutRequest;
 }
 
@@ -35,32 +39,18 @@ const StatusBadge: React.FC<{ status: PayoutQueueItem['status'] }> = ({ status }
     return <span className={`${base} ${colors[status]}`}>{status.replace('_', ' ')}</span>;
 };
 
-const ActionDropdown: React.FC<{ item: PayoutQueueItem, onAction: (item: PayoutQueueItem, status: PayoutQueueItem['status'], reason?: string, amount?: number) => void }> = ({ item, onAction }) => {
+const ActionDropdown: React.FC<{ item: PayoutQueueItem, onRequestAction: (item: PayoutQueueItem, status: PayoutQueueItem['status']) => void }> = ({ item, onRequestAction }) => {
     const [isOpen, setIsOpen] = useState(false);
     
     const handleActionClick = (status: PayoutQueueItem['status']) => {
         setIsOpen(false);
-        if (status === 'rejected') {
-            const reason = prompt("Please provide a reason for rejection:");
-            // Proceed even if reason is empty or cancelled (null)
-            onAction(item, status, reason || "");
-        } else if (item.requestType === 'Daily Payout' && status === 'approved') {
-            const amount = prompt("Enter the approved amount for this daily payout:");
-            if (amount && !isNaN(Number(amount))) {
-                onAction(item, status, undefined, Number(amount));
-            } else if (amount) {
-                alert("Please enter a valid number for the amount.");
-            }
-        }
-        else {
-            onAction(item, status);
-        }
+        onRequestAction(item, status);
     };
 
     const actions: PayoutQueueItem['status'][] = ['approved', 'on_hold', 'processing', 'rejected'];
 
     return (
-        <div className="relative">
+        <div className="relative inline-block">
             <button onClick={() => setIsOpen(!isOpen)} className="px-3 py-1 text-sm bg-gray-200 rounded-md hover:bg-gray-300">Actions</button>
             {isOpen && (
                 <div className="absolute right-0 mt-2 w-40 bg-white border rounded-md shadow-lg z-10">
@@ -75,164 +65,74 @@ const ActionDropdown: React.FC<{ item: PayoutQueueItem, onAction: (item: PayoutQ
     );
 };
 
-interface PayoutsPanelProps {
-    payouts: PayoutRequest[];
-    refunds: RefundRequest[];
-    dailyPayouts: DailyPayoutRequest[];
-    onUpdate: () => void;
-}
+const RequestDetailsModal: React.FC<{ item: PayoutQueueItem, onClose: () => void }> = ({ item, onClose }) => {
+    const DetailRow: React.FC<{ label: string; children: React.ReactNode; className?: string }> = ({ label, children, className }) => (
+        <div className={`py-2 grid grid-cols-3 gap-4 ${className}`}>
+            <dt className="text-sm font-medium text-gray-500">{label}</dt>
+            <dd className="mt-1 text-sm text-gray-900 col-span-2 sm:mt-0">{children}</dd>
+        </div>
+    );
 
-const PayoutsPanel: React.FC<PayoutsPanelProps> = ({ payouts, refunds, dailyPayouts, onUpdate }) => {
-    const [filter, setFilter] = useState<'all' | 'pending' | 'processing'>('pending');
-    const [editingItem, setEditingItem] = useState<PayoutQueueItem | null>(null);
-
-    const combinedRequests = useMemo<PayoutQueueItem[]>(() => {
-        const p: PayoutQueueItem[] = payouts.map(r => ({
-            id: r.id, requestType: 'Payout', status: r.status, amount: r.amount, userName: r.userName,
-            userAvatar: r.userAvatar, userRole: 'influencer', collabTitle: r.collaborationTitle,
-            collabId: r.collaborationId, collabType: r.collaborationType, timestamp: r.timestamp,
-            bankDetails: r.bankDetails, upiId: r.upiId,
-            originalRequest: r,
-        }));
-        const r: PayoutQueueItem[] = refunds.map(r => ({
-            id: r.id, requestType: 'Refund', status: r.status, amount: r.amount, userName: r.brandName,
-            userAvatar: r.brandAvatar, userRole: 'brand', brandName: r.brandName, collabTitle: r.collabTitle,
-            collabId: r.collabId, collabType: r.collabType, timestamp: r.timestamp,
-            bankDetails: r.bankDetails, panNumber: r.panNumber, description: r.description,
-            originalRequest: r,
-        }));
-        const d: PayoutQueueItem[] = dailyPayouts.map(r => ({
-            id: r.id, requestType: 'Daily Payout', status: r.status, amount: r.approvedAmount || 0, userName: r.userName,
-            userAvatar: '', userRole: r.userRole, collabTitle: `Daily Payout for ${r.collaborationId}`,
-            collabId: r.collaborationId, collabType: r.collaborationType, timestamp: r.timestamp, originalRequest: r,
-        }));
-
-        return [...p, ...r, ...d].sort((a, b) => (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0));
-    }, [payouts, refunds, dailyPayouts]);
-    
-    const filteredRequests = useMemo(() => {
-        if (filter === 'all') return combinedRequests;
-        if (filter === 'processing') return combinedRequests.filter(r => r.status === 'processing' || r.status === 'on_hold');
-        return combinedRequests.filter(r => r.status === 'pending');
-    }, [combinedRequests, filter]);
-
-    const handleStatusUpdate = async (item: PayoutQueueItem, status: PayoutQueueItem['status'], reason?: string, amount?: number) => {
-        try {
-            switch (item.requestType) {
-                case 'Payout':
-                    await apiService.updatePayoutStatus(item.id, status, item.collabId, item.collabType, reason);
-                    break;
-                case 'Refund':
-                    const refundUpdateData: Partial<RefundRequest> = { status };
-                    if (reason !== undefined) {
-                        refundUpdateData.rejectionReason = reason;
-                    }
-                    await apiService.updateRefundRequest(item.id, refundUpdateData);
-                    break;
-                case 'Daily Payout':
-                    if (status === 'approved' || status === 'rejected') {
-                        await apiService.updateDailyPayoutRequestStatus(item.id, item.collabId, item.collabType as 'ad_slot' | 'banner_booking', status, amount, reason);
-                    } else { // 'on_hold' or 'processing'
-                        await apiService.updateDailyPayoutRequest(item.id, { status });
-                    }
-                    break;
-            }
-            onUpdate();
-        } catch (error) {
-            console.error("Failed to update status:", error);
-            alert("Failed to update status.");
-        }
-    };
-    
-    const handleSaveDetails = async (item: PayoutQueueItem, data: Partial<PayoutRequest | RefundRequest>) => {
-        try {
-            if (item.requestType === 'Payout') {
-                await apiService.updatePayoutRequest(item.id, data);
-            } else if (item.requestType === 'Refund') {
-                await apiService.updateRefundRequest(item.id, data as Partial<RefundRequest>);
-            }
-            setEditingItem(null);
-            onUpdate();
-        } catch (error) {
-            console.error("Failed to update details:", error);
-            alert("Failed to save details.");
-        }
-    };
-    
     return (
-        <div className="p-6 h-full flex flex-col">
-            <h2 className="text-2xl font-bold mb-4">Payouts & Refunds</h2>
-            <div className="flex space-x-2 mb-4">
-                <button onClick={() => setFilter('pending')} className={`px-3 py-1 text-sm rounded-md ${filter === 'pending' ? 'bg-indigo-600 text-white' : 'bg-gray-200'}`}>Pending</button>
-                <button onClick={() => setFilter('processing')} className={`px-3 py-1 text-sm rounded-md ${filter === 'processing' ? 'bg-indigo-600 text-white' : 'bg-gray-200'}`}>Processing/Hold</button>
-                <button onClick={() => setFilter('all')} className={`px-3 py-1 text-sm rounded-md ${filter === 'all' ? 'bg-indigo-600 text-white' : 'bg-gray-200'}`}>All</button>
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-[60] p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+                <div className="p-4 border-b flex justify-between items-center">
+                    <h2 className="text-xl font-bold">Request Details</h2>
+                    <button onClick={onClose} className="text-2xl">&times;</button>
+                </div>
+                <div className="flex-1 p-6 overflow-y-auto">
+                    <h3 className="font-bold text-lg mb-4">Request Information</h3>
+                    <dl>
+                        <DetailRow label="Request ID">{item.id}</DetailRow>
+                        <DetailRow label="Type">{item.requestType}</DetailRow>
+                        <DetailRow label="Status"><StatusBadge status={item.status} /></DetailRow>
+                        <DetailRow label="Amount">₹{item.amount.toLocaleString('en-IN')}</DetailRow>
+                        <DetailRow label="Date">{item.timestamp?.toDate?.().toLocaleString()}</DetailRow>
+                    </dl>
+                    
+                    <h3 className="font-bold text-lg mt-6 mb-4 border-t pt-4">User Information</h3>
+                    <dl>
+                        <DetailRow label="Name">{item.userName}</DetailRow>
+                        <DetailRow label="Role">{item.userRole}</DetailRow>
+                        {item.userPiNumber && <DetailRow label="Profile ID"><span className="font-mono">{item.userPiNumber}</span></DetailRow>}
+                    </dl>
+                    
+                    <h3 className="font-bold text-lg mt-6 mb-4 border-t pt-4">Collaboration</h3>
+                    <dl>
+                        <DetailRow label="Title">{item.collabTitle}</DetailRow>
+                        <DetailRow label="Collab ID">{item.collabId || 'N/A'}</DetailRow>
+                        <DetailRow label="Document ID"><span className="font-mono text-xs">{item.collaborationId}</span></DetailRow>
+                    </dl>
+
+                    <h3 className="font-bold text-lg mt-6 mb-4 border-t pt-4">Payment Information</h3>
+                    <dl>
+                        {item.requestType === 'Payout' && (
+                            <>
+                                <DetailRow label="Method">{item.bankDetails ? 'Bank' : 'UPI'}</DetailRow>
+                                {item.bankDetails && <DetailRow label="Bank Details"><pre className="text-xs font-mono whitespace-pre-wrap bg-gray-50 p-2 rounded">{item.bankDetails}</pre></DetailRow>}
+                                {item.upiId && <DetailRow label="UPI ID">{item.upiId}</DetailRow>}
+                            </>
+                        )}
+                        {item.requestType === 'Refund' && (
+                            <>
+                                <DetailRow label="Bank Details"><pre className="text-xs font-mono whitespace-pre-wrap bg-gray-50 p-2 rounded">{item.bankDetails}</pre></DetailRow>
+                                <DetailRow label="PAN Number">{item.panNumber}</DetailRow>
+                                <DetailRow label="Reason for Refund"><p className="whitespace-pre-wrap">{item.description}</p></DetailRow>
+                            </>
+                        )}
+                        {item.requestType === 'Daily Payout' && (
+                             <DetailRow label="Video Proof">
+                                { 'videoUrl' in item.originalRequest && item.originalRequest.videoUrl ? (
+                                    <a href={item.originalRequest.videoUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline">View Video</a>
+                                ) : 'N/A' }
+                            </DetailRow>
+                        )}
+                    </dl>
+                </div>
+                <div className="p-4 bg-gray-50 border-t flex justify-end">
+                    <button onClick={onClose} className="px-4 py-2 text-sm rounded-md bg-gray-200">Close</button>
+                </div>
             </div>
-            <div className="flex-1 overflow-y-auto bg-white rounded-lg shadow-inner">
-                <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50 sticky top-0">
-                        <tr>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Details</th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment Details</th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                        {filteredRequests.map(item => (
-                            <tr key={item.id}>
-                                <td className="px-4 py-3 whitespace-nowrap">
-                                    <div className="flex items-center">
-                                        <img className="h-8 w-8 rounded-full" src={item.userAvatar} alt={item.userName} />
-                                        <div className="ml-2">
-                                            <div className="text-sm font-medium">{item.userName}</div>
-                                            <div className="text-xs text-gray-500 capitalize">{item.userRole}</div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td className="px-4 py-3">
-                                    <div className="text-sm font-semibold">{item.collabTitle}</div>
-                                    <div className="text-xs text-gray-600">{item.requestType}</div>
-                                </td>
-                                <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold">
-                                     ₹{item.amount.toLocaleString('en-IN')}
-                                </td>
-                                <td className="px-4 py-3 whitespace-nowrap text-sm">
-                                    <pre className="text-xs font-mono whitespace-pre-wrap bg-gray-50 p-2 rounded w-48 overflow-auto">
-                                        {item.requestType === 'Payout' && (item.bankDetails || item.upiId || 'N/A')}
-                                        {item.requestType === 'Refund' && (item.bankDetails || 'N/A')}
-                                        {item.requestType === 'Daily Payout' && 'N/A'}
-                                    </pre>
-                                    {(item.requestType === 'Payout' || item.requestType === 'Refund') && (
-                                        <button onClick={() => setEditingItem(item)} className="text-xs text-indigo-600 hover:underline mt-1">
-                                            Edit Details
-                                        </button>
-                                    )}
-                                </td>
-                                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                    {item.timestamp?.toDate?.().toLocaleDateString()}
-                                </td>
-                                <td className="px-4 py-3 whitespace-nowrap text-sm">
-                                    <StatusBadge status={item.status} />
-                                </td>
-                                <td className="px-4 py-3 whitespace-nowrap text-sm">
-                                    <ActionDropdown item={item} onAction={handleStatusUpdate} />
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-                 {filteredRequests.length === 0 && <p className="p-6 text-center text-gray-500">No requests in this category.</p>}
-            </div>
-            {editingItem && (
-                <EditDetailsModal
-                    item={editingItem}
-                    onClose={() => setEditingItem(null)}
-                    onSave={handleSaveDetails}
-                />
-            )}
         </div>
     );
 };
@@ -245,6 +145,7 @@ interface EditDetailsModalProps {
 
 const EditDetailsModal: React.FC<EditDetailsModalProps> = ({ item, onClose, onSave }) => {
     const [details, setDetails] = useState({
+        amount: item.amount,
         bankDetails: item.bankDetails || '',
         upiId: item.upiId || '',
         panNumber: item.panNumber || '',
@@ -253,7 +154,8 @@ const EditDetailsModal: React.FC<EditDetailsModalProps> = ({ item, onClose, onSa
     const [isSaving, setIsSaving] = useState(false);
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-        setDetails({ ...details, [e.target.name]: e.target.value });
+        const { name, value } = e.target;
+        setDetails(prev => ({ ...prev, [name]: name === 'amount' ? Number(value) : value }));
     };
 
     const handleSave = async () => {
@@ -268,8 +170,12 @@ const EditDetailsModal: React.FC<EditDetailsModalProps> = ({ item, onClose, onSa
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
             <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
-                <h3 className="text-lg font-bold mb-4">Edit Payment Details for {item.userName}</h3>
-                <div className="space-y-4">
+                <h3 className="text-lg font-bold mb-4">Edit Details for {item.userName}</h3>
+                <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700">Amount (INR)</label>
+                        <input name="amount" type="number" value={details.amount} onChange={handleChange} className="mt-1 w-full p-2 border rounded-md" />
+                    </div>
                     {isPayout && (
                         <>
                             <div>
@@ -310,5 +216,368 @@ const EditDetailsModal: React.FC<EditDetailsModalProps> = ({ item, onClose, onSa
     );
 };
 
+interface ConfirmationModalProps {
+    onConfirm: (details: { reason?: string; amount?: number }) => void;
+    onCancel: () => void;
+    isSending: boolean;
+    confirmationDetails: {
+        item: PayoutQueueItem;
+        status: PayoutQueueItem['status'];
+    }
+}
+
+const ConfirmationModal: React.FC<ConfirmationModalProps> = ({ onConfirm, onCancel, isSending, confirmationDetails }) => {
+    const { item, status } = confirmationDetails;
+    const [reason, setReason] = useState('');
+    const [amount, setAmount] = useState<string>('');
+    const capitalizedStatus = status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ');
+
+    const needsReason = status === 'rejected';
+    const needsAmount = item.requestType === 'Daily Payout' && status === 'approved';
+    
+    const isConfirmDisabled = isSending || (needsReason && !reason.trim()) || (needsAmount && (amount === '' || isNaN(Number(amount))));
+    
+    useEffect(() => {
+        if (needsAmount) {
+            const originalRequest = item.originalRequest as DailyPayoutRequest;
+            setAmount(String(originalRequest.approvedAmount || ''));
+        }
+    }, [item, needsAmount]);
+
+    const handleConfirmClick = () => {
+        onConfirm({
+            reason: needsReason ? reason : undefined,
+            amount: needsAmount ? Number(amount) : undefined
+        });
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+                <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Confirm Action</h3>
+                <div className="my-4 text-gray-600 dark:text-gray-300 space-y-4">
+                   <p>Are you sure you want to change the status to <strong>{capitalizedStatus}</strong> for this {item.requestType}?</p>
+                   <ul className="text-sm list-disc list-inside bg-gray-50 dark:bg-gray-700 p-3 rounded-md">
+                       <li><strong>User:</strong> {item.userName}</li>
+                       <li><strong>Amount:</strong> ₹{item.requestType === 'Daily Payout' && status === 'approved' ? (amount || item.amount.toLocaleString()) : item.amount.toLocaleString()}</li>
+                   </ul>
+
+                   {needsReason && (
+                       <div>
+                           <label htmlFor="rejectionReason" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Rejection Reason (Required)</label>
+                           <textarea
+                               id="rejectionReason"
+                               value={reason}
+                               onChange={(e) => setReason(e.target.value)}
+                               rows={3}
+                               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:bg-gray-900 dark:border-gray-600 dark:text-gray-200"
+                               placeholder="Provide a clear reason for rejection..."
+                           />
+                       </div>
+                   )}
+
+                   {needsAmount && (
+                       <div>
+                           <label htmlFor="approvedAmount" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Approved Amount (Required)</label>
+                           <input
+                               type="number"
+                               id="approvedAmount"
+                               value={amount}
+                               onChange={(e) => setAmount(e.target.value)}
+                               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:bg-gray-900 dark:border-gray-600 dark:text-gray-200"
+                               placeholder="Enter approved amount"
+                           />
+                       </div>
+                   )}
+                </div>
+                <div className="flex justify-end gap-4 mt-6">
+                    <button 
+                        onClick={onCancel} 
+                        disabled={isSending}
+                        className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500"
+                    >
+                        Cancel
+                    </button>
+                    <button 
+                        onClick={handleConfirmClick} 
+                        disabled={isConfirmDisabled} 
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                        {isSending ? 'Processing...' : `Confirm & ${capitalizedStatus}`}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+interface PayoutsPanelProps {
+    payouts: PayoutRequest[];
+    refunds: RefundRequest[];
+    dailyPayouts: DailyPayoutRequest[];
+    collaborations: CombinedCollabItem[];
+    allUsers: User[];
+    onUpdate: () => void;
+}
+
+const PayoutsPanel: React.FC<PayoutsPanelProps> = ({ payouts, refunds, dailyPayouts, collaborations, allUsers, onUpdate }) => {
+    const [filter, setFilter] = useState<'all' | 'pending' | 'processing'>('pending');
+    const [editingItem, setEditingItem] = useState<PayoutQueueItem | null>(null);
+    const [viewingDetails, setViewingDetails] = useState<PayoutQueueItem | null>(null);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [isAiSearching, setIsAiSearching] = useState(false);
+    const [filteredIds, setFilteredIds] = useState<string[] | null>(null);
+    const [confirmation, setConfirmation] = useState<{ item: PayoutQueueItem; status: PayoutQueueItem['status']; } | null>(null);
+    const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+
+
+    const userMap = useMemo(() => new Map(allUsers.map(u => [u.id, u])), [allUsers]);
+
+    const combinedRequests = useMemo<PayoutQueueItem[]>(() => {
+        const collabIdMap = new Map(collaborations.map(c => [c.id, c.originalData.collabId]));
+
+        const p: PayoutQueueItem[] = payouts.map(r => {
+            const user = userMap.get(r.userId);
+            return {
+                id: r.id, requestType: 'Payout', status: r.status, amount: r.amount, userName: r.userName,
+                userAvatar: r.userAvatar, userRole: 'influencer', userPiNumber: user?.piNumber, collabTitle: r.collaborationTitle,
+                collaborationId: r.collaborationId, collabType: r.collaborationType, timestamp: r.timestamp,
+                bankDetails: r.bankDetails, upiId: r.upiId,
+                collabId: r.collabId || collabIdMap.get(r.collaborationId),
+                originalRequest: r,
+            }
+        });
+
+        const r: PayoutQueueItem[] = refunds.map(r => {
+            const user = userMap.get(r.brandId);
+            return {
+                id: r.id, requestType: 'Refund', status: r.status, amount: r.amount, userName: r.brandName,
+                userAvatar: r.brandAvatar, userRole: 'brand', userPiNumber: user?.piNumber, brandName: r.brandName, collabTitle: r.collabTitle,
+                collaborationId: r.collaborationId, collabType: r.collabType, timestamp: r.timestamp,
+                bankDetails: r.bankDetails, panNumber: r.panNumber, description: r.description,
+                collabId: r.collabId || collabIdMap.get(r.collaborationId),
+                originalRequest: r,
+            }
+        });
+        
+        const d: PayoutQueueItem[] = dailyPayouts.map(r => {
+            const user = userMap.get(r.userId);
+            return {
+                id: r.id, requestType: 'Daily Payout', status: r.status, amount: r.approvedAmount || 0, userName: r.userName,
+                userAvatar: '', userRole: r.userRole, userPiNumber: user?.piNumber, collabTitle: `Daily Payout for ${r.collaborationId}`,
+                collaborationId: r.collaborationId, collabType: r.collaborationType, timestamp: r.timestamp, originalRequest: r,
+                collabId: r.collabId || collabIdMap.get(r.collaborationId),
+            }
+        });
+
+        return [...p, ...r, ...d].sort((a, b) => (b.timestamp?.toMillis() || 0) - (a.timestamp?.toMillis() || 0));
+    }, [payouts, refunds, dailyPayouts, collaborations, userMap]);
+    
+    const handleAiSearch = async () => {
+        if (!searchQuery.trim()) {
+            setFilteredIds(null);
+            return;
+        }
+        setIsAiSearching(true);
+        try {
+            const itemsForAI = combinedRequests.map(item => ({
+                id: item.id,
+                requestType: item.requestType,
+                status: item.status,
+                amount: item.amount,
+                userName: item.userName,
+                userPiNumber: item.userPiNumber,
+                collabTitle: item.collabTitle,
+                collaborationId: item.collaborationId,
+                collabId: item.collabId,
+                timestamp: item.timestamp
+            }));
+            const matchedIds = await geminiService.filterPayoutsWithAI(searchQuery, itemsForAI);
+            setFilteredIds(matchedIds);
+        } catch (err) {
+            console.error(err);
+            alert("AI Search failed. Please try again.");
+            setFilteredIds(null);
+        } finally {
+            setIsAiSearching(false);
+        }
+    };
+    
+    const filteredRequests = useMemo(() => {
+        let results = combinedRequests;
+
+        if (filter === 'processing') {
+            results = results.filter(r => r.status === 'processing' || r.status === 'on_hold');
+        } else if (filter === 'pending') {
+            results = results.filter(r => r.status === 'pending');
+        }
+        
+        if (filteredIds !== null) {
+            const idSet = new Set(filteredIds);
+            results = results.filter(r => idSet.has(r.id));
+        }
+
+        return results;
+    }, [combinedRequests, filter, filteredIds]);
+
+    const handleStatusUpdateRequest = (item: PayoutQueueItem, status: PayoutQueueItem['status']) => {
+        setConfirmation({ item, status });
+    };
+
+    const executeStatusUpdate = async (details: { reason?: string; amount?: number }) => {
+        if (!confirmation) return;
+        
+        const { item, status } = confirmation;
+        const { reason, amount } = details;
+
+        setIsUpdatingStatus(true);
+        try {
+            switch (item.requestType) {
+                case 'Payout':
+                    await apiService.updatePayoutStatus(item.id, status, item.collaborationId, item.collabType, reason);
+                    break;
+                case 'Refund':
+                    const refundUpdateData: Partial<RefundRequest> = { status };
+                    if (reason !== undefined) refundUpdateData.rejectionReason = reason;
+                    await apiService.updateRefundRequest(item.id, refundUpdateData);
+                    break;
+                case 'Daily Payout':
+                    if (status === 'approved' || status === 'rejected') {
+                        await apiService.updateDailyPayoutRequestStatus(item.id, item.collaborationId, item.collabType as 'ad_slot' | 'banner_booking', status, amount, reason);
+                    } else { // 'on_hold' or 'processing'
+                        await apiService.updateDailyPayoutRequest(item.id, { status });
+                    }
+                    break;
+            }
+            onUpdate();
+        } catch (error) {
+            console.error("Failed to update status:", error);
+            alert("Failed to update status.");
+        } finally {
+            setIsUpdatingStatus(false);
+            setConfirmation(null);
+        }
+    };
+    
+    const handleSaveDetails = async (item: PayoutQueueItem, data: Partial<PayoutRequest | RefundRequest>) => {
+        try {
+            if (item.requestType === 'Payout') {
+                await apiService.updatePayoutRequest(item.id, data);
+            } else if (item.requestType === 'Refund') {
+                await apiService.updateRefundRequest(item.id, data as Partial<RefundRequest>);
+            }
+            setEditingItem(null);
+            onUpdate();
+        } catch (error) {
+            console.error("Failed to update details:", error);
+            alert("Failed to save details.");
+        }
+    };
+    
+    return (
+        <div className="p-6 h-full flex flex-col">
+            <h2 className="text-2xl font-bold mb-4">Payouts & Refunds</h2>
+
+            <div className="mb-4 relative">
+                <input
+                    type="text"
+                    placeholder="Describe the requests you want to see (e.g., 'refunds over 5000', 'pending daily payouts')"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
+                    className="w-full p-3 pr-28 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200"
+                />
+                <button
+                    onClick={handleAiSearch}
+                    disabled={isAiSearching}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center px-3 py-1.5 text-sm font-semibold text-white bg-gradient-to-r from-teal-400 to-indigo-600 rounded-md shadow hover:shadow-md disabled:opacity-50"
+                >
+                    <SparklesIcon className={`w-4 h-4 mr-1 ${isAiSearching ? 'animate-spin' : ''}`} />
+                    {isAiSearching ? 'Searching...' : 'AI Search'}
+                </button>
+            </div>
+
+            <div className="flex space-x-2 mb-4">
+                <button onClick={() => setFilter('pending')} className={`px-3 py-1 text-sm rounded-md ${filter === 'pending' ? 'bg-indigo-600 text-white' : 'bg-gray-200'}`}>Pending</button>
+                <button onClick={() => setFilter('processing')} className={`px-3 py-1 text-sm rounded-md ${filter === 'processing' ? 'bg-indigo-600 text-white' : 'bg-gray-200'}`}>Processing/Hold</button>
+                <button onClick={() => setFilter('all')} className={`px-3 py-1 text-sm rounded-md ${filter === 'all' ? 'bg-indigo-600 text-white' : 'bg-gray-200'}`}>All</button>
+            </div>
+            <div className="flex-1 overflow-y-auto bg-white rounded-lg shadow-inner">
+                <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Details</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Collab ID</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                        {filteredRequests.map(item => (
+                            <tr key={item.id}>
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                    <div className="flex items-center">
+                                        <img className="h-8 w-8 rounded-full" src={item.userAvatar} alt={item.userName} />
+                                        <div className="ml-2">
+                                            <div className="text-sm font-medium">{item.userName}</div>
+                                            {item.userPiNumber && <div className="text-xs text-gray-400 font-mono">{item.userPiNumber}</div>}
+                                            <div className="text-xs text-gray-500 capitalize">{item.userRole}</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td className="px-4 py-3">
+                                    <div className="text-sm font-semibold">{item.collabTitle}</div>
+                                    <div className="text-xs text-gray-600">{item.requestType}</div>
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold">
+                                     ₹{item.amount.toLocaleString('en-IN')}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono">
+                                    {item.collabId || 'N/A'}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                    {item.timestamp?.toDate?.().toLocaleDateString()}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap text-sm">
+                                    <StatusBadge status={item.status} />
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap text-sm text-right space-x-2">
+                                     <button onClick={() => setViewingDetails(item)} className="text-indigo-600 hover:underline">Details</button>
+                                     {item.requestType !== 'Daily Payout' && (
+                                        <button onClick={() => setEditingItem(item)} className="text-blue-600 hover:underline">Edit</button>
+                                     )}
+                                    <ActionDropdown item={item} onRequestAction={handleStatusUpdateRequest} />
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                 {filteredRequests.length === 0 && <p className="p-6 text-center text-gray-500">No requests found.</p>}
+            </div>
+            {editingItem && (
+                <EditDetailsModal
+                    item={editingItem}
+                    onClose={() => setEditingItem(null)}
+                    onSave={handleSaveDetails}
+                />
+            )}
+            {viewingDetails && (
+                 <RequestDetailsModal item={viewingDetails} onClose={() => setViewingDetails(null)} />
+            )}
+            {confirmation && (
+                <ConfirmationModal 
+                    onConfirm={executeStatusUpdate}
+                    onCancel={() => setConfirmation(null)}
+                    isSending={isUpdatingStatus}
+                    confirmationDetails={confirmation}
+                />
+            )}
+        </div>
+    );
+};
 
 export default PayoutsPanel;

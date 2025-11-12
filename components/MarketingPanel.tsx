@@ -1,220 +1,193 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { apiService } from '../services/apiService';
-import { PlatformBanner, PlatformSettings } from '../types';
-import { ImageIcon, TrashIcon } from './Icons';
-
-// Re-using ToggleSwitch from SettingsPanel logic
-const ToggleSwitch: React.FC<{ enabled: boolean; onChange: (enabled: boolean) => void }> = ({ enabled, onChange }) => (
-    <button
-        type="button"
-        className={`${enabled ? 'bg-indigo-600' : 'bg-gray-200'} relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out`}
-        role="switch"
-        aria-checked={enabled}
-        onClick={() => onChange(!enabled)}
-    >
-        <span
-            aria-hidden="true"
-            className={`${enabled ? 'translate-x-5' : 'translate-x-0'} pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
-        />
-    </button>
-);
+import { User, UserRole, PlatformSettings } from '../types';
 
 interface MarketingPanelProps {
+    allUsers: User[];
     platformSettings: PlatformSettings;
     onUpdate: () => void;
 }
 
-const MarketingPanel: React.FC<MarketingPanelProps> = ({ platformSettings, onUpdate }) => {
-    // Banner State
-    const [banners, setBanners] = useState<PlatformBanner[]>([]);
-    const [isLoadingBanners, setIsLoadingBanners] = useState(true);
-    const [newBannerTitle, setNewBannerTitle] = useState('');
-    const [newBannerTargetUrl, setNewBannerTargetUrl] = useState('');
-    const [newBannerImageFile, setNewBannerImageFile] = useState<File | null>(null);
-    const [imagePreview, setImagePreview] = useState<string | null>(null);
-    const [isUploading, setIsUploading] = useState(false);
+const ConfirmationModal: React.FC<{
+    count: number;
+    target: string;
+    onConfirm: () => void;
+    onCancel: () => void;
+    isSending: boolean;
+    type: 'Email' | 'Notification';
+}> = ({ count, target, onConfirm, onCancel, isSending, type }) => (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Confirm Bulk {type}</h3>
+            <p className="my-4 text-gray-600 dark:text-gray-300">
+                Are you sure you want to send this {type.toLowerCase()} to <strong>{count} {target}(s)</strong>? This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-4 mt-6">
+                <button 
+                    onClick={onCancel} 
+                    disabled={isSending}
+                    className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500"
+                >
+                    Cancel
+                </button>
+                <button 
+                    onClick={onConfirm} 
+                    disabled={isSending} 
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+                >
+                    {isSending ? 'Sending...' : 'Confirm & Send'}
+                </button>
+            </div>
+        </div>
+    </div>
+);
 
-    // Notification State
-    const [notificationTitle, setNotificationTitle] = useState('');
-    const [notificationBody, setNotificationBody] = useState('');
-    const [notificationTargetUrl, setNotificationTargetUrl] = useState('');
-    const [isSending, setIsSending] = useState(false);
+const MarketingPanel: React.FC<MarketingPanelProps> = ({ allUsers }) => {
+    const [mainTab, setMainTab] = useState<'push' | 'email'>('push');
+    
+    // Push Notification State
+    const [pushTitle, setPushTitle] = useState('');
+    const [pushBody, setPushBody] = useState('');
+    const [pushUrl, setPushUrl] = useState('');
     const [subscribedUserCount, setSubscribedUserCount] = useState(0);
 
-    // Feedback State
+    // Email State
+    const [activeEmailTab, setActiveEmailTab] = useState<UserRole>('influencer');
+    const [emailSubject, setEmailSubject] = useState('');
+    const [emailBody, setEmailBody] = useState('');
+    
+    // General State
+    const [isSending, setIsSending] = useState(false);
     const [feedback, setFeedback] = useState<{ type: 'success' | 'error', message: string } | null>(null);
-
-    const showFeedback = (type: 'success' | 'error', message: string) => {
-        setFeedback({ type, message });
-        setTimeout(() => setFeedback(null), 4000);
-    };
-
-    const fetchBanners = useCallback(async () => {
-        setIsLoadingBanners(true);
-        try {
-            const data = await apiService.getPlatformBanners();
-            setBanners(data);
-        } catch (error) {
-            showFeedback('error', 'Failed to load banners.');
-        } finally {
-            setIsLoadingBanners(false);
-        }
-    }, []);
+    const [showConfirmation, setShowConfirmation] = useState<false | 'email' | 'push'>(false);
 
     useEffect(() => {
-        fetchBanners();
         apiService.getSubscribedUserCount().then(setSubscribedUserCount);
-    }, [fetchBanners]);
+    }, []);
 
-    const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files?.[0]) {
-            const file = e.target.files[0];
-            setNewBannerImageFile(file);
-            setImagePreview(URL.createObjectURL(file));
-        }
-    };
-
-    const handleCreateBanner = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!newBannerTitle || !newBannerTargetUrl || !newBannerImageFile) {
-            showFeedback('error', 'All fields are required for a new banner.');
-            return;
-        }
-        setIsUploading(true);
-        try {
-            const imageUrl = await apiService.uploadPlatformBannerImage(newBannerImageFile);
-            await apiService.createPlatformBanner({
-                title: newBannerTitle,
-                imageUrl,
-                targetUrl: newBannerTargetUrl,
-                isActive: false,
-            });
-            showFeedback('success', 'Banner created successfully.');
-            // Reset form
-            setNewBannerTitle('');
-            setNewBannerTargetUrl('');
-            setNewBannerImageFile(null);
-            setImagePreview(null);
-            fetchBanners();
-            onUpdate(); // To update dashboard banner if it's active
-        } catch (error) {
-            showFeedback('error', 'Failed to create banner.');
-        } finally {
-            setIsUploading(false);
-        }
-    };
-    
-    const handleToggleBanner = async (banner: PlatformBanner) => {
-        try {
-            await apiService.updatePlatformBanner(banner.id, { isActive: !banner.isActive });
-            showFeedback('success', `Banner ${!banner.isActive ? 'activated' : 'deactivated'}.`);
-            fetchBanners();
-            onUpdate();
-        } catch (error) {
-            showFeedback('error', 'Failed to update banner status.');
-        }
-    };
-
-    const handleDeleteBanner = async (bannerId: string) => {
-        if (window.confirm("Are you sure you want to delete this banner?")) {
-            try {
-                await apiService.deletePlatformBanner(bannerId);
-                showFeedback('success', 'Banner deleted.');
-                fetchBanners();
-            } catch (error) {
-                showFeedback('error', 'Failed to delete banner.');
+    const userCounts = useMemo(() => {
+        return allUsers.reduce((acc, user) => {
+            if (user.role) {
+                acc[user.role] = (acc[user.role] || 0) + 1;
             }
+            return acc;
+        }, {} as Record<UserRole, number>);
+    }, [allUsers]);
+
+    const executeSend = async () => {
+        if (showConfirmation === 'email') {
+            await executeSendEmail();
+        } else if (showConfirmation === 'push') {
+            await executeSendPush();
         }
     };
 
-    const handleSendNotification = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if(!notificationTitle || !notificationBody) {
-            showFeedback('error', 'Title and Body are required for notifications.');
+    const executeSendEmail = async () => {
+        if (!emailSubject || !emailBody) {
+            setFeedback({ type: 'error', message: 'Subject and Body are required.' });
             return;
         }
-        if(!window.confirm(`Send this notification to ${subscribedUserCount} users?`)) return;
-
         setIsSending(true);
+        setShowConfirmation(false);
         try {
-            await apiService.sendPushNotification(notificationTitle, notificationBody, notificationTargetUrl);
-            showFeedback('success', 'Notification queued for sending.');
-            setNotificationTitle('');
-            setNotificationBody('');
-            setNotificationTargetUrl('');
+            await apiService.sendBulkEmail(activeEmailTab, emailSubject, emailBody);
+            setFeedback({ type: 'success', message: `Email for ${activeEmailTab}s has been queued.` });
+            setEmailSubject('');
+            setEmailBody('');
         } catch (error) {
-            showFeedback('error', 'Failed to send notification.');
+            setFeedback({ type: 'error', message: 'Failed to queue email.' });
         } finally {
             setIsSending(false);
         }
     };
 
+    const executeSendPush = async () => {
+        if (!pushTitle || !pushBody) {
+            setFeedback({ type: 'error', message: 'Title and Body are required for notifications.' });
+            return;
+        }
+        setIsSending(true);
+        setShowConfirmation(false);
+        try {
+            await apiService.sendPushNotification(pushTitle, pushBody, pushUrl || undefined);
+            setFeedback({ type: 'success', message: `Push notification has been queued to ${subscribedUserCount} users.` });
+            setPushTitle('');
+            setPushBody('');
+            setPushUrl('');
+        } catch (error) {
+            setFeedback({ type: 'error', message: 'Failed to queue push notification.' });
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    const emailTabs: { role: UserRole; name: string }[] = [
+        { role: 'influencer', name: 'Influencers' },
+        { role: 'brand', name: 'Brands' },
+        { role: 'livetv', name: 'Live TV' },
+        { role: 'banneragency', name: 'Banner Agencies' },
+    ];
+    
+    const currentAudienceCount = userCounts[activeEmailTab] || 0;
 
     return (
-        <div className="h-full overflow-y-auto p-6 space-y-8 bg-gray-50">
+        <div className="p-6 bg-gray-50 h-full">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Marketing Tools</h2>
+            
+            <div className="flex border-b border-gray-200 mb-6">
+                <button onClick={() => setMainTab('push')} className={`px-4 py-2 font-medium text-sm ${mainTab === 'push' ? 'border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-500'}`}>Push Notifications</button>
+                <button onClick={() => setMainTab('email')} className={`px-4 py-2 font-medium text-sm ${mainTab === 'email' ? 'border-b-2 border-indigo-500 text-indigo-600' : 'text-gray-500'}`}>Bulk Email</button>
+            </div>
+
             {feedback && (
-                <div className={`p-3 rounded-lg text-white text-sm ${feedback.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
+                <div className={`p-3 rounded-lg mb-4 text-white text-sm ${feedback.type === 'success' ? 'bg-green-500' : 'bg-red-500'}`}>
                     {feedback.message}
                 </div>
             )}
-            {/* Banners Section */}
-            <div className="bg-white p-6 rounded-lg shadow-sm">
-                <h2 className="text-xl font-bold text-gray-800 mb-4">Platform Banners</h2>
-                
-                {/* Create Form */}
-                <form onSubmit={handleCreateBanner} className="space-y-4 p-4 border rounded-lg bg-gray-50">
-                    <h3 className="font-semibold text-gray-700">Create New Banner</h3>
-                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <input type="text" placeholder="Banner Title" value={newBannerTitle} onChange={e => setNewBannerTitle(e.target.value)} className="w-full p-2 border rounded-md" />
-                        <input type="url" placeholder="Target URL (e.g., https://...)" value={newBannerTargetUrl} onChange={e => setNewBannerTargetUrl(e.target.value)} className="w-full p-2 border rounded-md" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Banner Image</label>
-                        <div className="mt-1 flex items-center gap-4">
-                            <div className="w-32 h-16 bg-gray-200 rounded-md flex items-center justify-center">
-                                {imagePreview ? <img src={imagePreview} alt="preview" className="w-full h-full object-cover rounded-md" /> : <ImageIcon className="w-8 h-8 text-gray-400" />}
-                            </div>
-                            <input type="file" accept="image/*" onChange={handleImageChange} className="text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"/>
-                        </div>
-                    </div>
-                    <button type="submit" disabled={isUploading} className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50">
-                        {isUploading ? 'Uploading...' : 'Create Banner'}
-                    </button>
-                </form>
 
-                {/* Banner List */}
-                <div className="mt-6 space-y-3">
-                    {isLoadingBanners ? <p>Loading banners...</p> : banners.map(banner => (
-                        <div key={banner.id} className="p-3 border rounded-lg flex items-center justify-between gap-4">
-                            <img src={banner.imageUrl} alt={banner.title} className="w-24 h-12 object-cover rounded-md" />
-                            <div className="flex-1">
-                                <p className="font-semibold">{banner.title}</p>
-                                <a href={banner.targetUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 truncate">{banner.targetUrl}</a>
-                            </div>
-                            <div className="flex items-center gap-4">
-                                <ToggleSwitch enabled={banner.isActive} onChange={() => handleToggleBanner(banner)} />
-                                <button onClick={() => handleDeleteBanner(banner.id)} className="text-red-500 hover:text-red-700"><TrashIcon className="w-5 h-5"/></button>
-                            </div>
+            {mainTab === 'push' && (
+                <div className="bg-white p-6 rounded-lg shadow-sm">
+                    <h3 className="text-lg font-bold text-gray-800 mb-4">Send a Push Notification</h3>
+                    <div className="space-y-4">
+                        <input type="text" placeholder="Notification Title" value={pushTitle} onChange={e => setPushTitle(e.target.value)} className="w-full p-2 border rounded-md" required />
+                        <textarea placeholder="Notification Body" value={pushBody} onChange={e => setPushBody(e.target.value)} rows={5} className="w-full p-2 border rounded-md" required />
+                        <input type="url" placeholder="Target URL (Optional, e.g., https://...)" value={pushUrl} onChange={e => setPushUrl(e.target.value)} className="w-full p-2 border rounded-md" />
+                        <div className="flex justify-end">
+                            <button onClick={() => setShowConfirmation('push')} disabled={isSending || !pushTitle || !pushBody || subscribedUserCount === 0} className="px-6 py-3 text-sm font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                                Send to {subscribedUserCount} Subscribed User(s)
+                            </button>
                         </div>
-                    ))}
+                    </div>
                 </div>
-            </div>
+            )}
 
-            {/* Notifications Section */}
-            <div className="bg-white p-6 rounded-lg shadow-sm">
-                <h2 className="text-xl font-bold text-gray-800 mb-4">Push Notifications</h2>
-                <form onSubmit={handleSendNotification} className="space-y-4 p-4 border rounded-lg bg-gray-50">
-                    <input type="text" placeholder="Notification Title" value={notificationTitle} onChange={e => setNotificationTitle(e.target.value)} className="w-full p-2 border rounded-md" required />
-                    <textarea placeholder="Notification Body" value={notificationBody} onChange={e => setNotificationBody(e.target.value)} rows={3} className="w-full p-2 border rounded-md" required />
-                    <input type="url" placeholder="Target URL (Optional)" value={notificationTargetUrl} onChange={e => setNotificationTargetUrl(e.target.value)} className="w-full p-2 border rounded-md" />
-                    <div className="flex justify-between items-center">
-                        <p className="text-sm text-gray-600">Reaches ~{subscribedUserCount} users.</p>
-                        <button type="submit" disabled={isSending} className="px-4 py-2 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50">
-                            {isSending ? 'Sending...' : 'Send Notification'}
-                        </button>
+            {mainTab === 'email' && (
+                <div className="bg-white p-6 rounded-lg shadow-sm">
+                    <div className="flex border-b border-gray-200">
+                        {emailTabs.map(tab => (
+                            <button key={tab.role} onClick={() => setActiveEmailTab(tab.role)} className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 ${activeEmailTab === tab.role ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}>
+                                {tab.name} ({userCounts[tab.role] || 0})
+                            </button>
+                        ))}
                     </div>
-                </form>
-            </div>
+                    <div className="space-y-4 pt-4">
+                        <input type="text" placeholder="Email Subject" value={emailSubject} onChange={e => setEmailSubject(e.target.value)} className="w-full p-2 border rounded-md" required />
+                        <textarea placeholder={`Email body for all ${activeEmailTab}s...`} value={emailBody} onChange={e => setEmailBody(e.target.value)} rows={12} className="w-full p-2 border rounded-md" required />
+                        <div className="flex justify-end">
+                            <button onClick={() => setShowConfirmation('email')} disabled={isSending || !emailSubject || !emailBody || currentAudienceCount === 0} className="px-6 py-3 text-sm font-semibold text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50">
+                                Send to {currentAudienceCount} {activeEmailTab}(s)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showConfirmation === 'email' && (
+                <ConfirmationModal type="Email" count={currentAudienceCount} target={activeEmailTab} onConfirm={executeSend} onCancel={() => setShowConfirmation(false)} isSending={isSending} />
+            )}
+            {showConfirmation === 'push' && (
+                <ConfirmationModal type="Notification" count={subscribedUserCount} target="Subscribed User" onConfirm={executeSend} onCancel={() => setShowConfirmation(false)} isSending={isSending} />
+            )}
         </div>
     );
 };

@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { User, MembershipPlan, PlatformSettings } from '../types';
 import { apiService } from '../services/apiService';
 import DailyPayoutRequestModal from './DailyPayoutRequestModal';
-// Fix: Corrected Firebase import for 'Timestamp' to align with Firebase v9 modular syntax.
 import { Timestamp } from 'firebase/firestore';
 
 interface ProfilePageProps {
@@ -18,6 +17,25 @@ const indianCities = [
     'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Ahmedabad', 'Chennai', 'Kolkata', 'Surat', 'Pune', 'Jaipur', 'Lucknow', 'Kanpur', 'Nagpur', 'Indore', 'Thane', 'Bhopal', 'Visakhapatnam', 'Pimpri-Chinchwad', 'Patna', 'Vadodara', 'Ghaziabad', 'Ludhiana', 'Agra', 'Nashik', 'Faridabad', 'Meerut', 'Rajkot', 'Varanasi', 'Srinagar', 'Aurangabad', 'Dhanbad', 'Amritsar', 'Navi Mumbai', 'Allahabad', 'Ranchi', 'Howrah', 'Coimbatore', 'Jabalpur', 'Gwalior', 'Vijayawada', 'Jodhpur', 'Madurai', 'Raipur', 'Kota', 'Guwahati', 'Chandigarh'
 ];
 
+const ToggleSwitch: React.FC<{ enabled: boolean; onChange: (enabled: boolean) => void }> = ({ enabled, onChange }) => (
+    <button
+        type="button"
+        className={`${
+            enabled ? 'bg-indigo-600' : 'bg-gray-200'
+        } relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2`}
+        role="switch"
+        aria-checked={enabled}
+        onClick={() => onChange(!enabled)}
+    >
+        <span
+            aria-hidden="true"
+            className={`${
+                enabled ? 'translate-x-5' : 'translate-x-0'
+            } pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out`}
+        />
+    </button>
+);
+
 const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoToMembership, platformSettings }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState({
@@ -28,6 +46,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
     location: user.location || '',
     msmeRegistrationNumber: user.msmeRegistrationNumber || '',
   });
+  const [notificationPref, setNotificationPref] = useState(user.notificationPreferences?.enabled ?? false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -60,6 +79,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
           msmeRegistrationNumber: user.msmeRegistrationNumber || '',
         });
       }
+      setNotificationPref(user.notificationPreferences?.enabled ?? false);
       setImagePreview(null);
       setImageFile(null);
     }
@@ -78,6 +98,23 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
       setSuccess(null);
     }
   };
+
+  const handleNotificationToggle = async () => {
+    const newPref = !notificationPref;
+    setNotificationPref(newPref);
+    setIsLoading(true);
+    try {
+        await apiService.updateNotificationPreferences(user.id, { enabled: newPref });
+        // Update local user object so the NotificationManager can react
+        onProfileUpdate({ ...user, notificationPreferences: { enabled: newPref } });
+        setSuccess('Notification preferences updated.');
+    } catch (err) {
+        setError('Failed to update preferences.');
+        setNotificationPref(!newPref); // Revert on error
+    } finally {
+        setIsLoading(false);
+    }
+};
 
   const handleCancel = () => {
     // Re-fetch original data to discard changes
@@ -158,7 +195,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
   };
 
 // Fix: Added 'isEditing' to the props interface to resolve TypeScript error.
-  const InfoRow: React.FC<{ label: string; value: React.ReactNode; isEditable?: boolean; name?: string; type?: string; multiline?: boolean; children?: React.ReactNode; isEditing: boolean; }> = ({ label, value, isEditable = false, name = '', type = 'text', multiline = false, children, isEditing }) => (
+  const InfoRow: React.FC<{ label: string; value: React.ReactNode; isEditable?: boolean; name?: string; type?: string; multiline?: boolean; children?: React.ReactNode; isEditing?: boolean; }> = ({ label, value, isEditable = false, name = '', type = 'text', multiline = false, children, isEditing }) => (
     <div className="py-3 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 px-4 sm:px-6">
       <dt className="text-sm font-medium text-gray-500">{label}</dt>
       <dd className="mt-1 text-sm text-gray-900 sm:col-span-2 sm:mt-0">
@@ -218,8 +255,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
 
   const MembershipSection = () => {
     const { membership } = user;
-    const isCreator = ['influencer', 'livetv', 'banneragency'].includes(user.role);
-
+    
     const effectiveMembership = membership || {
         plan: 'free' as MembershipPlan,
         isActive: false,
@@ -227,7 +263,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
         usage: { directCollaborations: 0, campaigns: 0, liveTvBookings: 0, bannerAdBookings: 0 }
     };
 
-    const { plan, expiresAt, usage } = effectiveMembership;
+    const { plan, isActive, expiresAt, usage } = effectiveMembership;
     
     const isCurrentlyActive = effectiveMembership.isActive && expiresAt && (expiresAt as Timestamp).toDate() > new Date();
 
@@ -323,6 +359,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
     );
 };
 
+  const isCreator = ['influencer', 'livetv', 'banneragency'].includes(user.role);
 
   return (
     <>
@@ -362,6 +399,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
                 </div>
               <InfoRow label="Full Name" value={formData.name} isEditable name="name" isEditing={isEditing} />
               <InfoRow label="Email Address" value={user.email} isEditing={isEditing} />
+              <InfoRow label="Profile ID" value={<span className="font-mono">{user.piNumber || 'N/A'}</span>} isEditing={false} />
               <InfoRow label="Mobile Number" value={formData.mobileNumber} isEditable name="mobileNumber" type="tel" isEditing={isEditing} />
               {(user.role === 'brand' || user.role === 'livetv' || user.role === 'banneragency') && <InfoRow label="Company Name" value={formData.companyName} isEditable name="companyName" isEditing={isEditing} />}
               {user.role === 'influencer' && <InfoRow label="Social Media Links" value={formData.socialMediaLinks || 'Not provided'} isEditable name="socialMediaLinks" multiline isEditing={isEditing} />}
@@ -391,6 +429,24 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, onProfileUpdate, onGoTo
 
       {success && <div className="mt-4 p-4 text-sm text-green-700 bg-green-100 rounded-lg">{success}</div>}
       {error && <div className="mt-4 p-4 text-sm text-red-700 bg-red-100 rounded-lg">{error}</div>}
+
+      <div className="bg-white shadow-lg rounded-2xl overflow-hidden">
+        <div className="px-4 py-5 sm:px-6">
+            <h3 className="text-xl font-bold leading-6 text-gray-900">Notifications</h3>
+            <p className="mt-1 max-w-2xl text-sm text-gray-500">Manage your push notification settings.</p>
+        </div>
+        <div className="border-t border-gray-200 px-4 py-5 sm:p-0">
+            <dl className="sm:divide-y sm:divide-gray-200">
+                <div className="py-3 sm:py-5 sm:grid sm:grid-cols-3 sm:gap-4 px-4 sm:px-6">
+                    <dt className="text-sm font-medium text-gray-500">Enable Push Notifications</dt>
+                    <dd className="mt-1 flex text-sm text-gray-900 sm:col-span-2 sm:mt-0">
+                        <ToggleSwitch enabled={notificationPref} onChange={handleNotificationToggle} />
+                    </dd>
+                </div>
+            </dl>
+        </div>
+      </div>
+
 
       <MembershipSection />
       <DailyPayoutSection />

@@ -10,6 +10,7 @@ interface CombinedHistoryItem {
     amount: number;
     status: string;
     transactionId: string;
+    collaborationId: string;
 }
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
@@ -57,7 +58,7 @@ const PaymentHistoryPage: React.FC<{ user: User }> = ({ user }) => {
         const safeToDate = (ts: any): Date | undefined => {
             if (ts && typeof ts.toDate === 'function') {
                 try {
-                    return (ts as Timestamp).toDate();
+                    return ts.toDate();
                 } catch (e) {
                     return undefined;
                 }
@@ -72,6 +73,7 @@ const PaymentHistoryPage: React.FC<{ user: User }> = ({ user }) => {
             amount: t.amount,
             status: t.status,
             transactionId: t.transactionId,
+            collaborationId: t.relatedId,
         }));
 
         const mappedPayouts: CombinedHistoryItem[] = payouts.map(p => ({
@@ -81,6 +83,7 @@ const PaymentHistoryPage: React.FC<{ user: User }> = ({ user }) => {
             amount: p.amount,
             status: p.status,
             transactionId: p.id,
+            collaborationId: p.collaborationId,
         }));
 
         return [...mappedTransactions, ...mappedPayouts].sort((a, b) => {

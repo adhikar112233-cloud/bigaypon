@@ -19,6 +19,7 @@ interface PhonePeModalProps {
     userId: string;
     description: string;
     relatedId: string;
+    collabId?: string;
   };
 }
 
@@ -46,6 +47,7 @@ const PhonePeModal: React.FC<PhonePeModalProps> = ({ baseAmount, platformSetting
         type: 'payment',
         description: transactionDetails.description,
         relatedId: transactionDetails.relatedId,
+        collabId: transactionDetails.collabId,
         amount: totalPayable,
         status: 'completed',
         transactionId: `PE_${Date.now()}${Math.random().toString(36).substring(2, 8)}`,
