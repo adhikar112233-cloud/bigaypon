@@ -1290,9 +1290,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user, allUsers, allTrans
         }
     };
     
-// FIX: Corrected the 'handleDiscountChange' function to properly update nested state for discount settings. 
-// The previous implementation was likely causing a "not callable" error due to incorrect property access syntax. 
-// This new implementation is type-safe and follows standard React immutable update patterns.
     const handleDiscountChange = (
         discountType: keyof PlatformSettings['discountSettings'],
         field: keyof DiscountSetting,
@@ -1303,7 +1300,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user, allUsers, allTrans
         handleSettingChange('discountSettings', {
             ...settings.discountSettings,
             [discountType]: {
-                // FIX: Corrected property access from function call `()` to bracket notation `[]` to resolve "not callable" error.
+                // Fix: Corrected property access from function call `()` to bracket notation `[]` to resolve "not callable" error.
                 ...settings.discountSettings[discountType],
                 [field]: value,
             },

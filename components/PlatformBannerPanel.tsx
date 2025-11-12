@@ -123,32 +123,35 @@ const PlatformBannerPanel: React.FC<{ onUpdate: () => void }> = ({ onUpdate }) =
         setGeneratedImage(null);
         setManualImageFile(null);
         setManualImagePreview(null);
-
-        const result = await generateImageFromPrompt(aiPrompt);
-
-        // FIX: Correctly handle discriminated union by checking `success` property first.
-        if (result.success) {
-            // Handle success case where `data` exists
-            setGeneratedImage(result.data);
-            setIsGenerating(false);
-        } else {
-            // Handle failure case where `reason` and `message` exist
-            if (result.reason === 'NO_IMAGE') {
-                setWarning("Couldn't generate an image. Trying to improve your prompt...");
-                try {
-                    const enhancedPrompt = await enhanceImagePrompt(aiPrompt);
-                    setAiPrompt(enhancedPrompt);
-                    setWarning("We've enhanced your prompt for you! Try generating again.");
-                } catch (e) {
-                    setError("Failed to enhance the prompt. Please try rephrasing it manually.");
-                    setWarning(null);
-                } finally {
-                    setIsGenerating(false);
-                }
+    
+        try {
+            const result = await generateImageFromPrompt(aiPrompt);
+    
+            // Fix: Correctly handle discriminated union by checking `success` property first.
+            if (result.success) {
+                // Handle success case where `data` exists
+                setGeneratedImage(result.data);
             } else {
-                setWarning(result.message);
-                setIsGenerating(false);
+                // Handle failure case where `reason` and `message` exist
+                if (result.reason === 'NO_IMAGE') {
+                    setWarning("Couldn't generate an image. Trying to improve your prompt...");
+                    try {
+                        const enhancedPrompt = await enhanceImagePrompt(aiPrompt);
+                        setAiPrompt(enhancedPrompt);
+                        setWarning("We've enhanced your prompt for you! Try generating again.");
+                    } catch (e) {
+                        setError("Failed to enhance the prompt. Please try rephrasing it manually.");
+                        setWarning(null);
+                    }
+                } else {
+                    setWarning(result.message);
+                }
             }
+        } catch (e) {
+            console.error("Failed to generate image:", e);
+            setError("An unexpected error occurred during image generation.");
+        } finally {
+            setIsGenerating(false);
         }
     };
 

@@ -3,6 +3,7 @@ import { initializeApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import { getFirestore, type Firestore } from 'firebase/firestore';
 import { getStorage, type FirebaseStorage } from 'firebase/storage';
+import { getAnalytics, type Analytics } from 'firebase/analytics';
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
@@ -20,6 +21,7 @@ let app: FirebaseApp;
 let auth: Auth;
 let db: Firestore;
 let storage: FirebaseStorage;
+let analytics: Analytics;
 let isFirebaseConfigured = false;
 
 try {
@@ -27,6 +29,7 @@ try {
     auth = getAuth(app);
     db = getFirestore(app);
     storage = getStorage(app);
+    analytics = getAnalytics(app);
 
     // Increase the retry time for file uploads to prevent timeouts on slow networks.
     // The default is 10 minutes (600000ms). We are increasing it to 20 minutes.
@@ -40,4 +43,4 @@ try {
 }
 
 
-export { auth, db, storage, isFirebaseConfigured, firebaseConfig };
+export { auth, db, storage, analytics, isFirebaseConfigured, firebaseConfig };

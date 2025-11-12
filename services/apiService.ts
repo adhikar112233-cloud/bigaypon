@@ -416,19 +416,25 @@ export const apiService = {
         },
     };
     
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
-        const existingData = docSnap.data();
-        // Merge defaults with existing data to ensure all fields are present
-        return { 
-            ...defaultSettings, 
-            ...existingData, 
-            payoutSettings: { ...defaultSettings.payoutSettings, ...existingData.payoutSettings },
-            discountSettings: { ...defaultSettings.discountSettings, ...(existingData.discountSettings || {}) }
-        } as PlatformSettings;
-    } else {
-        // If the document doesn't exist, create it with the full default settings
-        await setDoc(docRef, defaultSettings);
+    try {
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+            const existingData = docSnap.data();
+            // Merge defaults with existing data to ensure all fields are present
+            return { 
+                ...defaultSettings, 
+                ...existingData, 
+                payoutSettings: { ...defaultSettings.payoutSettings, ...existingData.payoutSettings },
+                discountSettings: { ...defaultSettings.discountSettings, ...(existingData.discountSettings || {}) }
+            } as PlatformSettings;
+        } else {
+            // If the document doesn't exist, try to create it with the full default settings
+            await setDoc(docRef, defaultSettings);
+            return defaultSettings;
+        }
+    } catch (error) {
+        console.warn("Could not read/write platform settings from Firestore due to permission error. Falling back to local default settings.", error);
+        // On permission error, just return the local defaults so the app can still run.
         return defaultSettings;
     }
   },
@@ -757,12 +763,17 @@ export const apiService = {
   },
   
   getActivePlatformBanners: async (): Promise<PlatformBanner[]> => {
-    const bannersRef = collection(db, 'platform_banners');
-    const q = query(bannersRef, where('isActive', '==', true));
-    const snapshot = await getDocs(q);
-    const banners = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PlatformBanner));
-    banners.sort((a, b) => ((b.createdAt as Timestamp)?.toMillis() || 0) - ((a.createdAt as Timestamp)?.toMillis() || 0));
-    return banners;
+      const bannersRef = collection(db, 'platform_banners');
+      const q = query(bannersRef, where('isActive', '==', true));
+      try {
+          const snapshot = await getDocs(q);
+          const banners = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PlatformBanner));
+          banners.sort((a, b) => ((b.createdAt as Timestamp)?.toMillis() || 0) - ((a.createdAt as Timestamp)?.toMillis() || 0));
+          return banners;
+      } catch (error) {
+          console.warn("Could not fetch active platform banners from Firestore due to permission error. Returning an empty list.", error);
+          return [];
+      }
   },
   
   createPlatformBanner: async (data: Omit<PlatformBanner, 'id' | 'createdAt'>): Promise<void> => {
